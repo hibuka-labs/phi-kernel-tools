@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use agent_base::{AgentResult, Tool, ToolContext, ToolControlFlow, ToolOutput};
-use agent_works::skill::SkillRegistry;
+use agent_works::skill::{SkillParamType, SkillRegistry};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -82,6 +82,44 @@ impl Tool for ApplySkillTool {
                     .collect()
             })
             .unwrap_or_default();
+
+        // ── Parameter type validation (Phase 4.2.6) ──
+        // Validate Number-typed parameters before applying the skill.
+        // This catches type errors early with a clear message instead of
+        // letting template substitution fail silently.
+        {
+            let skill = match self.registry.get(skill_name).await {
+                Some(s) => s,
+                None => {
+                    return Ok(ToolOutput {
+                        summary: format!("技能 '{}' 不存在", skill_name),
+                        raw: None,
+                        control_flow: ToolControlFlow::Break,
+                        truncation: None,
+                    });
+                }
+            };
+
+            for param in skill.parameters() {
+                if param.param_type == SkillParamType::Number {
+                    if let Some(value) = params.get(&param.name) {
+                        if !value.is_empty()
+                            && value.parse::<f64>().is_err()
+                        {
+                            return Ok(ToolOutput {
+                                summary: format!(
+                                    "参数 '{}' 需要数字类型，但收到了 '{}'",
+                                    param.name, value
+                                ),
+                                raw: None,
+                                control_flow: ToolControlFlow::Break,
+                                truncation: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
 
         // Apply the skill — generates UpdatePlanArgs (plan checklist)
         let plan = match self.registry.apply(skill_name, &params).await {
@@ -257,5 +295,52 @@ mod tests {
             language: agent_base::Language::Zh,
             cancel_token: tokio_util::sync::CancellationToken::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn test_apply_skill_number_validation() {
+        let registry = Arc::new(SkillRegistry::new());
+        let skill = Arc::new(TemplateSkill {
+            params: vec![SkillParam {
+                name: "count".to_string(),
+                description: "Number of instances".to_string(),
+                param_type: SkillParamType::Number,
+                required: true,
+                default: None,
+            }],
+        });
+        registry.register(skill).await;
+
+        let tool = ApplySkillTool::new(registry);
+
+        // Non-numeric value should be rejected
+        let result = tool
+            .call(
+                &json!({"skill_name": "test-template", "params": {"count": "not-a-number"}}),
+                &dummy_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(result.summary.contains("数字类型"), "expected number validation error, got: {}", result.summary);
+
+        // Numeric value should be accepted
+        let result = tool
+            .call(
+                &json!({"skill_name": "test-template", "params": {"count": "42"}}),
+                &dummy_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(result.summary.contains("检查磁盘空间"), "expected success, got: {}", result.summary);
+
+        // Empty value should be accepted (not a validation error)
+        let result = tool
+            .call(
+                &json!({"skill_name": "test-template", "params": {"count": ""}}),
+                &dummy_ctx(),
+            )
+            .await
+            .unwrap();
+        assert!(result.summary.contains("检查磁盘空间"));
     }
 }
