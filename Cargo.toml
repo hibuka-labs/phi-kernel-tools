@@ -1,0 +1,28 @@
+[package]
+name = "phi-kernel-tools"
+version = "0.1.0"
+edition = "2024"
+description = "Kernel tools for phi-agent — multi-agent, skill, and memory tools"
+license = "MIT"
+repository = "https://github.com/hibuka-labs/phi-kernel-tools"
+keywords = ["agent", "ai", "llm", "tool-calling"]
+categories = ["development-tools", "asynchronous"]
+
+[features]
+default = ["multi-agent", "skill"]
+multi-agent = []
+skill = ["agent-works/skill"]
+
+[dependencies]
+agent-base = "0.1.7"
+agent-works = "0.1.5"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.52", features = ["full"] }
+tokio-util = "0.7"
+tracing = "0.1"
+
+[dev-dependencies]
+futures-core = "0.3"
+futures-util = "0.3"
