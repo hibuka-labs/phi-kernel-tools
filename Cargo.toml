@@ -2,7 +2,7 @@
 name = "phi-kernel-tools"
 version = "0.1.0"
 edition = "2024"
-description = "Kernel tools for phi-agent — multi-agent, skill, and memory tools"
+description = "Kernel tools for phi-agent — file system, multi-agent, and shell tools"
 license = "MIT"
 repository = "https://github.com/hibuka-labs/phi-kernel-tools"
 keywords = ["agent", "ai", "llm", "tool-calling"]
@@ -10,10 +10,9 @@ categories = ["development-tools", "asynchronous"]
 
 [features]
 default = []
-full = ["multi-agent", "skill", "shell", "file"]
+full = ["multi-agent", "shell", "file"]
 file = []
 multi-agent = []
-skill = ["agent-works/skill"]
 shell = []
 
 [dependencies]
