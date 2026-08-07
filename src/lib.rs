@@ -24,3 +24,6 @@ pub mod multi_agent;
 
 #[cfg(feature = "skill")]
 pub mod skill;
+
+#[cfg(feature = "shell")]
+pub mod local_shell;
