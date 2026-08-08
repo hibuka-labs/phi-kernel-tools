@@ -35,12 +35,12 @@ fn resolve_path(workspace_root: &Path, user_path: &str) -> Result<PathBuf, Strin
 
     // If the path already exists, verify it's within workspace root via canonicalization
     if resolved.exists() {
-        let canonical = resolved.canonicalize().map_err(|e| {
-            format!("Failed to resolve path '{}': {}", trimmed, e)
-        })?;
-        let root_canonical = workspace_root.canonicalize().map_err(|e| {
-            format!("Failed to resolve workspace root: {}", e)
-        })?;
+        let canonical = resolved
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve path '{}': {}", trimmed, e))?;
+        let root_canonical = workspace_root
+            .canonicalize()
+            .map_err(|e| format!("Failed to resolve workspace root: {}", e))?;
         if !canonical.starts_with(&root_canonical) {
             return Err(format!(
                 "Path traversal detected: '{}' resolves outside the workspace root.",
@@ -232,7 +232,8 @@ mod tests {
         std::fs::write(dir.path().join("real.txt"), "hello").unwrap();
 
         #[cfg(unix)]
-        std::os::unix::fs::symlink(dir.path().join("real.txt"), dir.path().join("link.txt")).unwrap();
+        std::os::unix::fs::symlink(dir.path().join("real.txt"), dir.path().join("link.txt"))
+            .unwrap();
 
         // On platforms without symlink support, this test is skipped implicitly
         if dir.path().join("link.txt").exists() {

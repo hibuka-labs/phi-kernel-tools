@@ -55,11 +55,7 @@ impl TypedTool for ListAgentsTool {
         serde_json::to_string(&output).unwrap_or_default()
     }
 
-    async fn call_typed(
-        &self,
-        _args: Self::Args,
-        _ctx: &ToolContext,
-    ) -> AgentResult<Self::Output> {
+    async fn call_typed(&self, _args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
         let agents = self.runtime.list_agents();
         Ok(agents
             .into_iter()

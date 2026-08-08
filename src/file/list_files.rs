@@ -112,7 +112,10 @@ impl Tool for ListFilesTool {
 
         if !dir_path.is_dir() {
             return Ok(ToolOutput {
-                summary: format!("[Error]: Path is not a directory: {}. Use read_file to read files.", path_str),
+                summary: format!(
+                    "[Error]: Path is not a directory: {}. Use read_file to read files.",
+                    path_str
+                ),
                 raw: Some(json!({"error": "not a directory", "path": path_str})),
                 control_flow: ToolControlFlow::Break,
                 truncation: None,
@@ -139,7 +142,10 @@ impl Tool for ListFilesTool {
         // Format output
         if entries.is_empty() {
             let msg = if pattern.is_some() {
-                format!("Directory '{}' is empty or no entries match the pattern.", path_str)
+                format!(
+                    "Directory '{}' is empty or no entries match the pattern.",
+                    path_str
+                )
             } else {
                 format!("Directory '{}' is empty.", path_str)
             };
@@ -309,7 +315,10 @@ fn collect_entries_recursive(
         let entry_path = entry.path();
         let file_type = entry.file_type().ok();
         let is_dir = file_type.as_ref().map(|ft| ft.is_dir()).unwrap_or(false);
-        let is_symlink = file_type.as_ref().map(|ft| ft.is_symlink()).unwrap_or(false);
+        let is_symlink = file_type
+            .as_ref()
+            .map(|ft| ft.is_symlink())
+            .unwrap_or(false);
 
         if is_dir {
             // Skip symlinked directories to prevent infinite loops
@@ -465,7 +474,10 @@ mod tests {
         std::fs::write(dir.path().join("Cargo.toml"), "toml").unwrap();
 
         let result = tool
-            .call(&json!({"path": ".", "recursive": true, "pattern": "*.rs"}), &dummy_ctx())
+            .call(
+                &json!({"path": ".", "recursive": true, "pattern": "*.rs"}),
+                &dummy_ctx(),
+            )
             .await
             .unwrap();
 

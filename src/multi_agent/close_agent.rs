@@ -63,11 +63,7 @@ impl TypedTool for CloseAgentTool {
         serde_json::to_string(&output).unwrap_or_default()
     }
 
-    async fn call_typed(
-        &self,
-        args: Self::Args,
-        _ctx: &ToolContext,
-    ) -> AgentResult<Self::Output> {
+    async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
         match self.runtime.close_agent(&args.agent_path) {
             Ok(result) => Ok(CloseAgentOutput {
                 closed: result.closed,

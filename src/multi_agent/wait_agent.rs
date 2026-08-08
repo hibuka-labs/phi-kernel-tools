@@ -76,11 +76,7 @@ impl TypedTool for WaitAgentTool {
         serde_json::to_string(&output).unwrap_or_default()
     }
 
-    async fn call_typed(
-        &self,
-        args: Self::Args,
-        _ctx: &ToolContext,
-    ) -> AgentResult<Self::Output> {
+    async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
         let result = self
             .runtime
             .wait_for_result(args.agent_path.as_deref(), args.timeout_ms)

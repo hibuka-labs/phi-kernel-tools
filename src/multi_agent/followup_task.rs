@@ -77,11 +77,7 @@ impl TypedTool for FollowupTaskTool {
         serde_json::to_string(&output).unwrap_or_default()
     }
 
-    async fn call_typed(
-        &self,
-        args: Self::Args,
-        _ctx: &ToolContext,
-    ) -> AgentResult<Self::Output> {
+    async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
         match self
             .runtime
             .send_task(&args.agent_path, args.task, args.interrupt)

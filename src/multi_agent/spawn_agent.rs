@@ -100,11 +100,7 @@ impl TypedTool for SpawnAgentTool {
         serde_json::to_string(&output).unwrap_or_default()
     }
 
-    async fn call_typed(
-        &self,
-        args: Self::Args,
-        _ctx: &ToolContext,
-    ) -> AgentResult<Self::Output> {
+    async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
         let system_prompt = args
             .system_prompt
             .or(args

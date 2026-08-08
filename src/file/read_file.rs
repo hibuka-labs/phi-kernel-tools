@@ -85,10 +85,7 @@ impl Tool for ReadFileTool {
             });
         }
 
-        let offset = args
-            .get("offset")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
+        let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
 
         let limit = args
             .get("limit")
@@ -246,7 +243,10 @@ mod tests {
         std::fs::write(dir.path().join("nums.txt"), content).unwrap();
 
         let result = tool
-            .call(&json!({"path": "nums.txt", "offset": 3, "limit": 2}), &dummy_ctx())
+            .call(
+                &json!({"path": "nums.txt", "offset": 3, "limit": 2}),
+                &dummy_ctx(),
+            )
             .await
             .unwrap();
 

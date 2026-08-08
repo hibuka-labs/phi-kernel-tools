@@ -3,18 +3,26 @@
 //! Verifies that kernel tools can be injected into agent_works::AgentBuilder
 //! via the factory pattern, and that the full pipeline works end-to-end.
 
+#[cfg(feature = "multi-agent")]
 use std::pin::Pin;
+#[cfg(feature = "multi-agent")]
 use std::sync::Arc;
 
+#[cfg(feature = "multi-agent")]
 use agent_base::{AgentResult, ChatMessage, LlmCapabilities, LlmClient, StreamChunk};
+#[cfg(feature = "multi-agent")]
 use agent_works::multi_agent::MultiAgentConfig;
+#[cfg(feature = "multi-agent")]
 use agent_works::{AgentBuilder, MultiAgentToolFactory};
+#[cfg(feature = "multi-agent")]
 use phi_kernel_tools::multi_agent;
 
 // ── Minimal stub LLM client ──
 
+#[cfg(feature = "multi-agent")]
 struct StubClient;
 
+#[cfg(feature = "multi-agent")]
 #[async_trait::async_trait]
 impl LlmClient for StubClient {
     async fn chat(
@@ -54,11 +62,13 @@ impl LlmClient for StubClient {
     }
 }
 
+#[cfg(feature = "multi-agent")]
 fn make_client() -> Arc<dyn LlmClient> {
     Arc::new(StubClient)
 }
 
 /// Helper: get sorted list of registered tool names from a runtime.
+#[cfg(feature = "multi-agent")]
 fn registered_tool_names(runtime: &agent_base::AgentRuntime) -> Vec<String> {
     tokio::task::block_in_place(|| {
         let tools = runtime.tools_mut();
@@ -70,6 +80,7 @@ fn registered_tool_names(runtime: &agent_base::AgentRuntime) -> Vec<String> {
 // ── End-to-end: create_all_tools + builder ──
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "multi-agent")]
 async fn test_inject_multi_agent_tools_via_factory() {
     let client = make_client();
     let factory: MultiAgentToolFactory = Arc::new(|rt| multi_agent::create_all_tools(rt));
@@ -114,6 +125,7 @@ async fn test_inject_multi_agent_tools_via_factory() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "multi-agent")]
 async fn test_builder_without_factory_has_no_multi_agent_tools() {
     let client = make_client();
     let runtime = AgentBuilder::new(client)
@@ -124,14 +136,11 @@ async fn test_builder_without_factory_has_no_multi_agent_tools() {
 
     let names = registered_tool_names(&runtime);
     assert!(!names.contains(&"spawn_agent".to_string()));
-    assert_eq!(
-        names.len(),
-        0,
-        "Expected 0 tools when no factory is set"
-    );
+    assert_eq!(names.len(), 0, "Expected 0 tools when no factory is set");
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "multi-agent")]
 async fn test_create_all_tools_returns_six_distinct_tools() {
     use agent_works::multi_agent::MultiAgentRuntime;
     use tokio_util::sync::CancellationToken;
@@ -159,6 +168,7 @@ async fn test_create_all_tools_returns_six_distinct_tools() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "multi-agent")]
 async fn test_multi_agent_disabled_does_not_register_tools() {
     let client = make_client();
     let factory: MultiAgentToolFactory = Arc::new(|rt| multi_agent::create_all_tools(rt));

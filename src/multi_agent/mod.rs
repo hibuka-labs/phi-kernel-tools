@@ -67,7 +67,13 @@ mod tests {
             _reasoning: Option<&agent_base::ReasoningConfig>,
             _response_format: Option<&agent_base::ResponseFormat>,
         ) -> agent_base::AgentResult<
-            Pin<Box<dyn futures_core::Stream<Item = agent_base::AgentResult<agent_base::StreamChunk>> + Send>>,
+            Pin<
+                Box<
+                    dyn futures_core::Stream<
+                            Item = agent_base::AgentResult<agent_base::StreamChunk>,
+                        > + Send,
+                >,
+            >,
         > {
             let chunks: Vec<agent_base::AgentResult<agent_base::StreamChunk>> = vec![
                 Ok(agent_base::StreamChunk::Text("ok".to_string())),
@@ -122,14 +128,18 @@ mod tests {
         assert!(!agent_base::TypedTool::description(&t).is_empty());
         let schema = t.parameters_schema();
         assert_eq!(schema["type"], "object");
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&"task_name".into()));
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&"message".into()));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&"task_name".into())
+        );
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&"message".into())
+        );
         assert!(matches!(
             SpawnAgentTool::control_flow(),
             ToolControlFlow::Continue
@@ -143,10 +153,12 @@ mod tests {
         assert!(!agent_base::TypedTool::description(&t).is_empty());
         let schema = t.parameters_schema();
         assert_eq!(schema["type"], "object");
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&"agent_path".into()));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&"agent_path".into())
+        );
         assert!(matches!(
             SendMessageTool::control_flow(),
             ToolControlFlow::Continue
@@ -159,10 +171,12 @@ mod tests {
         assert_eq!(agent_base::TypedTool::name(&t), "followup_task");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
         let schema = t.parameters_schema();
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&"agent_path".into()));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&"agent_path".into())
+        );
         assert!(matches!(
             FollowupTaskTool::control_flow(),
             ToolControlFlow::Continue
@@ -202,10 +216,12 @@ mod tests {
         assert_eq!(agent_base::TypedTool::name(&t), "close_agent");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
         let schema = t.parameters_schema();
-        assert!(schema["required"]
-            .as_array()
-            .unwrap()
-            .contains(&"agent_path".into()));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&"agent_path".into())
+        );
         assert!(matches!(
             CloseAgentTool::control_flow(),
             ToolControlFlow::Continue
@@ -481,7 +497,12 @@ mod tests {
             max_agent_depth: 1,
         };
         let rt = Arc::new(MultiAgentRuntime::new(
-            config, client, vec![], cancel, None, Language::En,
+            config,
+            client,
+            vec![],
+            cancel,
+            None,
+            Language::En,
         ));
 
         let t = SpawnAgentTool::new(rt.clone());

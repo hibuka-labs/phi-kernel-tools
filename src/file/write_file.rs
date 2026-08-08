@@ -192,7 +192,10 @@ impl Tool for WriteFileTool {
                 Ok(ToolOutput {
                     summary: format!(
                         "{} file: {} ({} bytes, {} lines)",
-                        verb, path_str, content.len(), line_count
+                        verb,
+                        path_str,
+                        content.len(),
+                        line_count
                     ),
                     raw: Some(json!({
                         "path": path_str,
@@ -365,10 +368,7 @@ mod tests {
         std::fs::create_dir(dir.path().join("mydir")).unwrap();
 
         let result = tool
-            .call(
-                &json!({"path": "mydir", "content": "stuff"}),
-                &dummy_ctx(),
-            )
+            .call(&json!({"path": "mydir", "content": "stuff"}), &dummy_ctx())
             .await
             .unwrap();
 
@@ -380,10 +380,7 @@ mod tests {
         let (dir, tool) = setup_temp_workspace();
 
         let result = tool
-            .call(
-                &json!({"path": "empty.txt", "content": ""}),
-                &dummy_ctx(),
-            )
+            .call(&json!({"path": "empty.txt", "content": ""}), &dummy_ctx())
             .await
             .unwrap();
 
@@ -400,7 +397,9 @@ mod tests {
 
         let def = tool.definition();
         assert_eq!(def["function"]["name"], "write_file");
-        let required = def["function"]["parameters"]["required"].as_array().unwrap();
+        let required = def["function"]["parameters"]["required"]
+            .as_array()
+            .unwrap();
         let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(required_names.contains(&"path"));
         assert!(required_names.contains(&"content"));

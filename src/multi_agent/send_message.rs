@@ -65,11 +65,7 @@ impl TypedTool for SendMessageTool {
         serde_json::to_string(&output).unwrap_or_default()
     }
 
-    async fn call_typed(
-        &self,
-        args: Self::Args,
-        _ctx: &ToolContext,
-    ) -> AgentResult<Self::Output> {
+    async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
         let delivered = self
             .runtime
             .send_message(&args.agent_path, args.message)
