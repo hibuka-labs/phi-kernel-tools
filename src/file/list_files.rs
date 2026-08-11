@@ -253,10 +253,10 @@ fn collect_entries(
         let file_name = entry.file_name().to_string_lossy().to_string();
 
         // Apply pattern filter (only to file name, not full path)
-        if let Some(pat) = pattern {
-            if !glob_match(pat, &file_name) {
-                continue;
-            }
+        if let Some(pat) = pattern
+            && !glob_match(pat, &file_name)
+        {
+            continue;
         }
 
         let is_dir = entry_path.is_dir();
@@ -332,10 +332,10 @@ fn collect_entries_recursive(
             let file_name = entry.file_name().to_string_lossy().to_string();
 
             // Apply pattern filter
-            if let Some(pat) = pattern {
-                if !glob_match(pat, &file_name) {
-                    continue;
-                }
+            if let Some(pat) = pattern
+                && !glob_match(pat, &file_name)
+            {
+                continue;
             }
 
             let size = entry.metadata().map(|m| m.len()).unwrap_or(0);

@@ -4,10 +4,12 @@
 //! in a workspace-root-sandboxed manner. These are the foundation for
 //! Skills and Memory prompt-injection mode.
 
+mod edit_file;
 mod list_files;
 mod read_file;
 mod write_file;
 
+pub use edit_file::EditFileTool;
 pub use list_files::ListFilesTool;
 pub use read_file::ReadFileTool;
 pub use write_file::WriteFileTool;

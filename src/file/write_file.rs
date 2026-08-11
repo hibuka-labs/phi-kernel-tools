@@ -157,18 +157,18 @@ impl Tool for WriteFileTool {
         }
 
         // Create parent directories
-        if let Some(parent) = file_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: Failed to create parent directories: {}", e),
-                    raw: Some(json!({
-                        "error": e.to_string(),
-                        "path": path_str,
-                    })),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
-            }
+        if let Some(parent) = file_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            return Ok(ToolOutput {
+                summary: format!("[Error]: Failed to create parent directories: {}", e),
+                raw: Some(json!({
+                    "error": e.to_string(),
+                    "path": path_str,
+                })),
+                control_flow: ToolControlFlow::Break,
+                truncation: None,
+            });
         }
 
         // Write the file
