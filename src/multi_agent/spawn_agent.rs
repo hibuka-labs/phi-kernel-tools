@@ -19,6 +19,14 @@ pub struct SpawnAgentArgs {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub fork_history: Option<String>,
+    /// Nesting depth for this agent. 1 = direct child of root, 2 = grandchild, etc.
+    /// Defaults to 1 (direct child).
+    #[serde(default = "default_depth")]
+    pub depth: i32,
+}
+
+fn default_depth() -> i32 {
+    1
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +91,10 @@ impl TypedTool for SpawnAgentTool {
                 "fork_history": {
                     "type": "string",
                     "description": "Optional history: 'none' (default), 'all', or a number N"
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "Nesting depth: 1=direct child, 2=grandchild, etc. Default 1."
                 }
             },
             "required": ["task_name", "message"]
@@ -105,7 +117,7 @@ impl TypedTool for SpawnAgentTool {
                 .map(|t| format!("You are a {} specialist.", t)))
             .unwrap_or_else(|| args.message.clone());
 
-        let depth = 1;
+        let depth = args.depth;
         let tool_count = 0;
 
         match self
