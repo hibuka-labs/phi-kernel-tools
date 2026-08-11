@@ -14,13 +14,10 @@ pub struct SpawnAgentArgs {
     #[serde(default)]
     pub system_prompt: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub model: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub reasoning_effort: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)]
     pub fork_history: Option<String>,
 }
 
@@ -100,7 +97,7 @@ impl TypedTool for SpawnAgentTool {
         serde_json::to_string(&output).unwrap_or_default()
     }
 
-    async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
+    async fn call_typed(&self, args: Self::Args, ctx: &ToolContext) -> AgentResult<Self::Output> {
         let system_prompt = args
             .system_prompt
             .or(args
@@ -113,7 +110,14 @@ impl TypedTool for SpawnAgentTool {
 
         match self
             .runtime
-            .spawn_child(&args.task_name, system_prompt, depth, tool_count)
+            .spawn_child_with_history(
+                &args.task_name,
+                system_prompt,
+                depth,
+                tool_count,
+                args.fork_history,
+                &ctx.session_id,
+            )
             .await
         {
             Ok(agent_path) => {

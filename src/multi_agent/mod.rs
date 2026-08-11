@@ -77,7 +77,9 @@ mod tests {
         > {
             let chunks: Vec<agent_base::AgentResult<agent_base::StreamChunk>> = vec![
                 Ok(agent_base::StreamChunk::Text("ok".to_string())),
-                Ok(agent_base::StreamChunk::Stop),
+                Ok(agent_base::StreamChunk::Stop {
+                    finish_reason: Some("stop".to_string()),
+                }),
             ];
             Ok(Box::pin(futures_util::stream::iter(chunks)))
         }
@@ -361,7 +363,7 @@ mod tests {
 
         // Spawn a child first
         let path = rt
-            .spawn_child("worker", "you are a worker".into(), 1, 0)
+            .spawn_child("worker", "you are a worker".into(), 1, 0, vec![])
             .await
             .unwrap();
 
