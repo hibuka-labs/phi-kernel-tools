@@ -22,30 +22,61 @@ phi-agent           Framework + CLI (consumer)
 
 ## Features
 
-| Feature | Default | Tools |
-|---------|---------|-------|
-| `multi-agent` | ✅ | spawn_agent, send_message, followup_task, wait_agent, list_agents, close_agent |
-| `skill` | ✅ | ApplySkillTool, SkillDetailTool |
+All features are opt-in. Use `full` to enable all.
+
+| Feature | Tools |
+|---------|-------|
+| `file` | `read_file`, `write_file`, `list_files`, `edit_file` |
+| `multi-agent` | `spawn_agent`, `send_message`, `followup_task`, `wait_agent`, `list_agents`, `close_agent` |
+| `shell` | `execute_command` |
+| `full` | Enables all of the above |
 
 ## Installation
 
 ```toml
 [dependencies]
-phi-kernel-tools = "0.1.0"
+phi-kernel-tools = "0.1.1"
 ```
 
 Or pick specific features:
 
 ```toml
 [dependencies]
-phi-kernel-tools = { version = "0.1.0", default-features = false, features = ["multi-agent"] }
+phi-kernel-tools = { version = "0.1.1", features = ["file", "shell"] }
 ```
 
 ## Usage
 
+### File Tools
+
+```rust
+use phi_kernel_tools::file::{ReadFileTool, WriteFileTool, ListFilesTool, EditFileTool};
+use std::path::PathBuf;
+
+let cwd = PathBuf::from(".");
+
+builder
+    .register_tool(ReadFileTool::new(cwd.clone()))
+    .register_tool(WriteFileTool::new(cwd.clone()))
+    .register_tool(ListFilesTool::new(cwd.clone()))
+    .register_tool(EditFileTool::new(cwd.clone()));
+```
+
+`EditFileTool` supports precision text replacement with a 4-level fallback matching strategy (exact match → rstrip → trim → Unicode NFC normalization).
+
+### Shell Tools
+
+```rust
+use phi_kernel_tools::local_shell::LocalShellTool;
+
+builder.register_tool(LocalShellTool::new(30_000));  // 30s timeout
+```
+
+### Multi-Agent Tools
+
 ```rust
 use phi_kernel_tools::multi_agent;
-use agent_works::{AgentBuilder, MultiAgentToolFactory};
+use agent_works::{MultiAgentRuntime, MultiAgentConfig};
 
 // Create a factory from phi-kernel-tools
 let factory: MultiAgentToolFactory =
@@ -58,6 +89,17 @@ let runtime = AgentBuilder::new(client)
     .build()
     .unwrap();
 ```
+
+The `spawn_agent` tool supports these parameters:
+
+| Parameter | Description |
+|-----------|-------------|
+| `fork_history` | `"none"` (default), `"all"`, or N — how much parent history the child inherits |
+| `depth` | Nesting depth (1 = direct child, 2 = grandchild, etc.) |
+| `model` | Optional model override for the sub-agent |
+| `reasoning_effort` | Optional reasoning effort (`low` / `medium` / `high`) |
+| `agent_type` | Optional role type that maps to a preset config |
+| `system_prompt` | Optional custom system prompt (overrides `agent_type`) |
 
 ## License
 

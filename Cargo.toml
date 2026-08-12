@@ -1,6 +1,6 @@
 [package]
 name = "phi-kernel-tools"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Kernel tools for phi-agent — file system, multi-agent, and shell tools"
 license = "MIT"
@@ -16,8 +16,8 @@ multi-agent = []
 shell = []
 
 [dependencies]
-agent-base = { version = "0.1.13" }
-agent-works = { version = "0.1.6" }
+agent-base = { version = "0.1.14" }
+agent-works = { version = "0.1.7" }
 async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

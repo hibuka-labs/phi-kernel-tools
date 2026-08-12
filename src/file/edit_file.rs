@@ -458,9 +458,11 @@ fn find_and_replace(
     }
 
     // Exhausted all fallback levels
-    Err("old_text not found in the file. Check that the text matches exactly, \
+    Err(
+        "old_text not found in the file. Check that the text matches exactly, \
          including whitespace and indentation."
-        .to_string())
+            .to_string(),
+    )
 }
 
 /// Find positions where `needle` matches with trailing whitespace stripped from lines.
