@@ -1,14 +1,16 @@
 use std::sync::Arc;
 
-use agent_base::{AgentResult, ToolContext, ToolControlFlow, TypedTool};
+use agent_base::{AgentResult, ToolContext, TypedTool};
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct FollowupTaskArgs {
+    /// Target agent path (e.g., 'root/searcher')
     pub agent_path: String,
+    /// Task description for the sub-agent
     pub task: String,
+    /// Whether to interrupt current task (default: true)
     #[serde(default = "default_interrupt")]
     pub interrupt: bool,
 }
@@ -46,35 +48,6 @@ impl TypedTool for FollowupTaskTool {
         "Send a task to a sub-agent and trigger execution.\n\
          Returns immediately. Use wait_agent to collect results.\n\
          Set interrupt=false to queue after current task completes."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "agent_path": {
-                    "type": "string",
-                    "description": "Target agent path (e.g., 'root/searcher')"
-                },
-                "task": {
-                    "type": "string",
-                    "description": "Task description for the sub-agent"
-                },
-                "interrupt": {
-                    "type": "boolean",
-                    "description": "Whether to interrupt current task (default: true)"
-                }
-            },
-            "required": ["agent_path", "task"]
-        })
-    }
-
-    fn control_flow() -> ToolControlFlow {
-        ToolControlFlow::Continue
-    }
-
-    fn format_output(&self, output: Self::Output) -> String {
-        serde_json::to_string(&output).unwrap_or_default()
     }
 
     async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {

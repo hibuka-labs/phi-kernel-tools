@@ -1,13 +1,14 @@
 use std::sync::Arc;
 
-use agent_base::{AgentResult, ToolContext, ToolControlFlow, TypedTool};
+use agent_base::{AgentResult, ToolContext, TypedTool};
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SendMessageArgs {
+    /// Target agent path (e.g., 'root/searcher')
     pub agent_path: String,
+    /// Message content to deliver
     pub message: String,
 }
 
@@ -38,31 +39,6 @@ impl TypedTool for SendMessageTool {
     fn description(&self) -> &'static str {
         "Send a message to a sub-agent without triggering execution.\n\
          The message is queued and delivered with the next followup_task."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "agent_path": {
-                    "type": "string",
-                    "description": "Target agent path (e.g., 'root/searcher')"
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Message content to deliver"
-                }
-            },
-            "required": ["agent_path", "message"]
-        })
-    }
-
-    fn control_flow() -> ToolControlFlow {
-        ToolControlFlow::Continue
-    }
-
-    fn format_output(&self, output: Self::Output) -> String {
-        serde_json::to_string(&output).unwrap_or_default()
     }
 
     async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {

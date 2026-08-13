@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agent_base::{AgentResult, Tool, ToolContext, ToolControlFlow, ToolOutput};
+use agent_base::{AgentResult, Content, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -30,28 +30,25 @@ impl Tool for ListFilesTool {
         "list_files"
     }
 
-    fn definition(&self) -> Value {
+    fn description(&self) -> &'static str {
+        "List files and directories in a workspace directory. Supports glob pattern filtering (e.g. '*.rs', 'src/**/*.md') and optional recursive mode. Use this to explore project structure, find files by pattern, or understand directory layout."
+    }
+
+    fn schema(&self) -> Value {
         json!({
-            "type": "function",
-            "function": {
-                "name": "list_files",
-                "description": "List files and directories in a workspace directory. Supports glob pattern filtering (e.g. '*.rs', 'src/**/*.md') and optional recursive mode. Use this to explore project structure, find files by pattern, or understand directory layout.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Directory path, relative to the workspace root. Default: '.' (workspace root)."
-                        },
-                        "pattern": {
-                            "type": "string",
-                            "description": "Glob pattern to filter files by name. Supports * (any chars except /) and ? (single char except /). E.g. '*.rs', 'test_*.rs', 'chapter?.md'. Does NOT support ** (use recursive=true for deep listing)."
-                        },
-                        "recursive": {
-                            "type": "boolean",
-                            "description": "Set to true to list files recursively in subdirectories. Default: false (single level only)."
-                        }
-                    }
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Directory path, relative to the workspace root. Default: '.' (workspace root)."
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern to filter files by name. Supports * (any chars except /) and ? (single char except /). E.g. '*.rs', 'test_*.rs', 'chapter?.md'. Does NOT support ** (use recursive=true for deep listing)."
+                },
+                "recursive": {
+                    "type": "boolean",
+                    "description": "Set to true to list files recursively in subdirectories. Default: false (single level only)."
                 }
             }
         })
@@ -68,7 +65,7 @@ impl Tool for ListFilesTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<ToolOutput> {
+    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let path_str = args
             .get("path")
             .and_then(Value::as_str)
@@ -91,35 +88,23 @@ impl Tool for ListFilesTool {
         let dir_path = match resolve_path(&self.workspace_root, &path_str) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: {}", e),
-                    raw: Some(json!({"error": e, "path": path_str})),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!("[Error]: {}", e))]);
             }
         };
 
         // Check if it exists and is a directory
         if !dir_path.exists() {
-            return Ok(ToolOutput {
-                summary: format!("[Error]: Directory not found: {}", path_str),
-                raw: Some(json!({"error": "directory not found", "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Directory not found: {}",
+                path_str
+            ))]);
         }
 
         if !dir_path.is_dir() {
-            return Ok(ToolOutput {
-                summary: format!(
-                    "[Error]: Path is not a directory: {}. Use read_file to read files.",
-                    path_str
-                ),
-                raw: Some(json!({"error": "not a directory", "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Path is not a directory: {}. Use read_file to read files.",
+                path_str
+            ))]);
         }
 
         // Collect entries
@@ -150,16 +135,7 @@ impl Tool for ListFilesTool {
                 format!("Directory '{}' is empty.", path_str)
             };
 
-            return Ok(ToolOutput {
-                summary: msg,
-                raw: Some(json!({
-                    "path": path_str,
-                    "entries": [],
-                    "count": 0,
-                })),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(msg)]);
         }
 
         let dir_count = entries.iter().filter(|e| e.is_dir).count();
@@ -199,23 +175,7 @@ impl Tool for ListFilesTool {
             "list_files"
         );
 
-        Ok(ToolOutput {
-            summary,
-            raw: Some(json!({
-                "path": path_str,
-                "count": entries.len(),
-                "files": file_count,
-                "dirs": dir_count,
-                "recursive": recursive,
-                "entries": entries.iter().map(|e| json!({
-                    "name": e.name,
-                    "is_dir": e.is_dir,
-                    "size": e.size,
-                })).collect::<Vec<_>>(),
-            })),
-            control_flow: ToolControlFlow::Break,
-            truncation: None,
-        })
+        Ok(vec![Content::text(summary)])
     }
 }
 
@@ -375,17 +335,10 @@ fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_base::tool::content_text;
 
     fn dummy_ctx() -> ToolContext {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        ToolContext {
-            session_id: agent_base::SessionId::new(0),
-            user_event_tx: tx,
-            llm_client: None,
-            session_store: None,
-            language: agent_base::Language::En,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-        }
+        ToolContext::for_test()
     }
 
     fn setup_temp_workspace() -> (tempfile::TempDir, ListFilesTool) {
@@ -403,7 +356,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("empty"));
+        assert!(content_text(&result).contains("empty"));
     }
 
     #[tokio::test]
@@ -418,10 +371,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("a.txt"));
-        assert!(result.summary.contains("b.rs"));
-        assert!(result.summary.contains("sub/"));
-        assert!(result.summary.contains("2 files, 1 dirs"));
+        assert!(content_text(&result).contains("a.txt"));
+        assert!(content_text(&result).contains("b.rs"));
+        assert!(content_text(&result).contains("sub/"));
+        assert!(content_text(&result).contains("2 files, 1 dirs"));
     }
 
     #[tokio::test]
@@ -436,9 +389,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("main.rs"));
-        assert!(result.summary.contains("lib.rs"));
-        assert!(!result.summary.contains("README.md"));
+        assert!(content_text(&result).contains("main.rs"));
+        assert!(content_text(&result).contains("lib.rs"));
+        assert!(!content_text(&result).contains("README.md"));
     }
 
     #[tokio::test]
@@ -456,10 +409,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("src/main.rs"));
-        assert!(result.summary.contains("src/lib.rs"));
-        assert!(result.summary.contains("tests/test.rs"));
-        assert!(result.summary.contains("Cargo.toml"));
+        assert!(content_text(&result).contains("src/main.rs"));
+        assert!(content_text(&result).contains("src/lib.rs"));
+        assert!(content_text(&result).contains("tests/test.rs"));
+        assert!(content_text(&result).contains("Cargo.toml"));
     }
 
     #[tokio::test]
@@ -482,12 +435,12 @@ mod tests {
             .unwrap();
 
         // Only .rs files should appear
-        assert!(result.summary.contains("src/main.rs"));
-        assert!(result.summary.contains("src/lib.rs"));
-        assert!(result.summary.contains("tests/test.rs"));
+        assert!(content_text(&result).contains("src/main.rs"));
+        assert!(content_text(&result).contains("src/lib.rs"));
+        assert!(content_text(&result).contains("tests/test.rs"));
         // Non-.rs files should be filtered out
-        assert!(!result.summary.contains("util.ts"));
-        assert!(!result.summary.contains("Cargo.toml"));
+        assert!(!content_text(&result).contains("util.ts"));
+        assert!(!content_text(&result).contains("Cargo.toml"));
     }
 
     #[tokio::test]
@@ -499,7 +452,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("not found"));
+        assert!(content_text(&result).contains("not found"));
     }
 
     #[tokio::test]
@@ -512,7 +465,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("not a directory"));
+        assert!(content_text(&result).contains("not a directory"));
     }
 
     #[tokio::test]
@@ -522,7 +475,7 @@ mod tests {
 
         let result = tool.call(&json!({}), &dummy_ctx()).await.unwrap();
 
-        assert!(result.summary.contains("hello.txt"));
+        assert!(content_text(&result).contains("hello.txt"));
     }
 
     #[tokio::test]
@@ -530,8 +483,7 @@ mod tests {
         let tool = ListFilesTool::new(PathBuf::from("/tmp"));
         assert_eq!(tool.name(), "list_files");
 
-        let def = tool.definition();
-        assert_eq!(def["function"]["name"], "list_files");
+        assert_eq!(tool.schema()["type"], "object");
     }
 
     #[tokio::test]

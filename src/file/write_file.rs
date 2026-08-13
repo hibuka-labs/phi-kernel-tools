@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agent_base::{AgentResult, Tool, ToolContext, ToolControlFlow, ToolOutput};
+use agent_base::{AgentResult, Content, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -30,31 +30,28 @@ impl Tool for WriteFileTool {
         "write_file"
     }
 
-    fn definition(&self) -> Value {
+    fn description(&self) -> &'static str {
+        "Write or create a file in the workspace. Creates parent directories automatically. Will not overwrite existing files unless 'overwrite' is set to true. Content size is limited to 1 MB. Use this to create or update source files, configuration, documentation, or any text file."
+    }
+
+    fn schema(&self) -> Value {
         json!({
-            "type": "function",
-            "function": {
-                "name": "write_file",
-                "description": "Write or create a file in the workspace. Creates parent directories automatically. Will not overwrite existing files unless 'overwrite' is set to true. Content size is limited to 1 MB. Use this to create or update source files, configuration, documentation, or any text file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file, relative to the workspace root. E.g. 'src/main.rs', 'config.toml'. Parent directories will be created if needed."
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "The content to write to the file."
-                        },
-                        "overwrite": {
-                            "type": "boolean",
-                            "description": "Set to true to overwrite an existing file. Default: false."
-                        }
-                    },
-                    "required": ["path", "content"]
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file, relative to the workspace root. E.g. 'src/main.rs', 'config.toml'. Parent directories will be created if needed."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The content to write to the file."
+                },
+                "overwrite": {
+                    "type": "boolean",
+                    "description": "Set to true to overwrite an existing file. Default: false."
                 }
-            }
+            },
+            "required": ["path", "content"]
         })
     }
 
@@ -69,7 +66,7 @@ impl Tool for WriteFileTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<ToolOutput> {
+    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let path_str = args
             .get("path")
             .and_then(Value::as_str)
@@ -89,70 +86,41 @@ impl Tool for WriteFileTool {
             .unwrap_or(false);
 
         if path_str.is_empty() {
-            return Ok(ToolOutput {
-                summary: "[Error]: No file path provided.".to_string(),
-                raw: Some(json!({"error": "no path provided"})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(
+                "[Error]: No file path provided.".to_string(),
+            )]);
         }
 
         // Check content size limit
         if content.len() > MAX_FILE_SIZE {
-            return Ok(ToolOutput {
-                summary: format!(
-                    "[Error]: Content size ({} bytes) exceeds the maximum allowed size ({} bytes / ~1 MB).",
-                    content.len(),
-                    MAX_FILE_SIZE
-                ),
-                raw: Some(json!({
-                    "error": "content too large",
-                    "content_size": content.len(),
-                    "max_size": MAX_FILE_SIZE,
-                    "path": path_str,
-                })),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Content size ({} bytes) exceeds the maximum allowed size ({} bytes / ~1 MB).",
+                content.len(),
+                MAX_FILE_SIZE
+            ))]);
         }
 
         // Resolve and validate the path
         let file_path = match resolve_path(&self.workspace_root, &path_str) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: {}", e),
-                    raw: Some(json!({"error": e, "path": path_str})),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!("[Error]: {}", e))]);
             }
         };
 
         // Check if file already exists
         if file_path.exists() {
             if file_path.is_dir() {
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: Path is a directory, not a file: {}", path_str),
-                    raw: Some(json!({"error": "path is a directory", "path": path_str})),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!(
+                    "[Error]: Path is a directory, not a file: {}",
+                    path_str
+                ))]);
             }
             if !overwrite {
-                return Ok(ToolOutput {
-                    summary: format!(
-                        "[Error]: File already exists: {}. Use overwrite=true to replace it.",
-                        path_str
-                    ),
-                    raw: Some(json!({
-                        "error": "file already exists",
-                        "path": path_str,
-                        "hint": "set overwrite=true to replace",
-                    })),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!(
+                    "[Error]: File already exists: {}. Use overwrite=true to replace it.",
+                    path_str
+                ))]);
             }
         }
 
@@ -160,15 +128,10 @@ impl Tool for WriteFileTool {
         if let Some(parent) = file_path.parent()
             && let Err(e) = std::fs::create_dir_all(parent)
         {
-            return Ok(ToolOutput {
-                summary: format!("[Error]: Failed to create parent directories: {}", e),
-                raw: Some(json!({
-                    "error": e.to_string(),
-                    "path": path_str,
-                })),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Failed to create parent directories: {}",
+                e
+            ))]);
         }
 
         // Write the file
@@ -189,34 +152,18 @@ impl Tool for WriteFileTool {
                     "write_file"
                 );
 
-                Ok(ToolOutput {
-                    summary: format!(
-                        "{} file: {} ({} bytes, {} lines)",
-                        verb,
-                        path_str,
-                        content.len(),
-                        line_count
-                    ),
-                    raw: Some(json!({
-                        "path": path_str,
-                        "size": content.len(),
-                        "lines": line_count,
-                        "overwrite": overwrite,
-                        "created": !overwrite,
-                    })),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                })
+                Ok(vec![Content::text(format!(
+                    "{} file: {} ({} bytes, {} lines)",
+                    verb,
+                    path_str,
+                    content.len(),
+                    line_count
+                ))])
             }
-            Err(e) => Ok(ToolOutput {
-                summary: format!("[Error]: Failed to write file: {}", e),
-                raw: Some(json!({
-                    "error": e.to_string(),
-                    "path": path_str,
-                })),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            }),
+            Err(e) => Ok(vec![Content::text(format!(
+                "[Error]: Failed to write file: {}",
+                e
+            ))]),
         }
     }
 }
@@ -224,17 +171,10 @@ impl Tool for WriteFileTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_base::tool::content_text;
 
     fn dummy_ctx() -> ToolContext {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        ToolContext {
-            session_id: agent_base::SessionId::new(0),
-            user_event_tx: tx,
-            llm_client: None,
-            session_store: None,
-            language: agent_base::Language::En,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-        }
+        ToolContext::for_test()
     }
 
     fn setup_temp_workspace() -> (tempfile::TempDir, WriteFileTool) {
@@ -255,8 +195,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Created"));
-        assert!(result.summary.contains("new.txt"));
+        assert!(content_text(&result).contains("Created"));
+        assert!(content_text(&result).contains("new.txt"));
 
         let content = std::fs::read_to_string(dir.path().join("new.txt")).unwrap();
         assert_eq!(content, "hello world");
@@ -275,8 +215,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("already exists"));
-        assert!(result.summary.contains("overwrite=true"));
+        assert!(content_text(&result).contains("already exists"));
+        assert!(content_text(&result).contains("overwrite=true"));
 
         // File should be unchanged
         let content = std::fs::read_to_string(dir.path().join("existing.txt")).unwrap();
@@ -296,8 +236,8 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Updated"));
-        assert!(result.summary.contains("existing.txt"));
+        assert!(content_text(&result).contains("Updated"));
+        assert!(content_text(&result).contains("existing.txt"));
 
         let content = std::fs::read_to_string(dir.path().join("existing.txt")).unwrap();
         assert_eq!(content, "replaced");
@@ -315,7 +255,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Created"));
+        assert!(content_text(&result).contains("Created"));
         assert!(dir.path().join("nested/deep/file.txt").exists());
     }
 
@@ -332,7 +272,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("exceeds the maximum"));
+        assert!(content_text(&result).contains("exceeds the maximum"));
     }
 
     #[tokio::test]
@@ -344,7 +284,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("No file path provided"));
+        assert!(content_text(&result).contains("No file path provided"));
     }
 
     #[tokio::test]
@@ -359,7 +299,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Error"));
+        assert!(content_text(&result).contains("Error"));
     }
 
     #[tokio::test]
@@ -372,7 +312,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("directory"));
+        assert!(content_text(&result).contains("directory"));
     }
 
     #[tokio::test]
@@ -384,9 +324,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Created"));
-        assert!(result.summary.contains("0 bytes"));
-        assert!(result.summary.contains("0 lines"));
+        assert!(content_text(&result).contains("Created"));
+        assert!(content_text(&result).contains("0 bytes"));
+        assert!(content_text(&result).contains("0 lines"));
         assert!(dir.path().join("empty.txt").exists());
     }
 
@@ -395,11 +335,9 @@ mod tests {
         let tool = WriteFileTool::new(PathBuf::from("/tmp"));
         assert_eq!(tool.name(), "write_file");
 
-        let def = tool.definition();
-        assert_eq!(def["function"]["name"], "write_file");
-        let required = def["function"]["parameters"]["required"]
-            .as_array()
-            .unwrap();
+        let schema = tool.schema();
+        assert_eq!(schema["type"], "object");
+        let required = schema["required"].as_array().unwrap();
         let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(required_names.contains(&"path"));
         assert!(required_names.contains(&"content"));

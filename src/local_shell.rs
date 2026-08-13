@@ -1,7 +1,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use agent_base::{AgentResult, Tool, ToolContext, ToolControlFlow, ToolOutput};
+use agent_base::{AgentResult, Content, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -67,27 +67,24 @@ impl Tool for LocalShellTool {
         "execute_command"
     }
 
-    fn definition(&self) -> Value {
+    fn description(&self) -> &'static str {
+        "Execute a shell command locally. Use for file operations, code compilation, Git operations, system info queries, etc. For commands that may produce large output, consider limiting lines (e.g. journalctl -n 50, grep ... | head -n 30)."
+    }
+
+    fn schema(&self) -> Value {
         json!({
-            "type": "function",
-            "function": {
-                "name": "execute_command",
-                "description": "Execute a shell command locally. Use for file operations, code compilation, Git operations, system info queries, etc. For commands that may produce large output, consider limiting lines (e.g. journalctl -n 50, grep ... | head -n 30).",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "The shell command to execute. For commands that may produce large output, consider limiting lines: cat large files with | tail -n 30, find / ls -R with | head -n 50, grep over large scope with | head -n 30."
-                        },
-                        "working_dir": {
-                            "type": "string",
-                            "description": "Working directory. Uses the current directory if not specified."
-                        }
-                    },
-                    "required": ["command"]
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The shell command to execute. For commands that may produce large output, consider limiting lines: cat large files with | tail -n 30, find / ls -R with | head -n 50, grep over large scope with | head -n 30."
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": "Working directory. Uses the current directory if not specified."
                 }
-            }
+            },
+            "required": ["command"]
         })
     }
 
@@ -101,7 +98,7 @@ impl Tool for LocalShellTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<ToolOutput> {
+    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let command = args
             .get("command")
             .and_then(Value::as_str)
@@ -110,12 +107,9 @@ impl Tool for LocalShellTool {
             .to_string();
 
         if command.is_empty() {
-            return Ok(ToolOutput {
-                summary: "[Error]: No command provided.".to_string(),
-                raw: None,
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(
+                "[Error]: No command provided.".to_string(),
+            )]);
         }
 
         tracing::info!(command = %command, timeout_ms = self.timeout_ms, "execute_command start");
@@ -139,12 +133,10 @@ impl Tool for LocalShellTool {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, command = %command, "execute_command: spawn failed");
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: Command execution failed: {}", e),
-                    raw: Some(json!({ "error": e.to_string(), "command": command })),
-                    control_flow: ToolControlFlow::Continue,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!(
+                    "[Error]: Command execution failed: {}",
+                    e
+                ))]);
             }
         };
 
@@ -169,27 +161,14 @@ impl Tool for LocalShellTool {
                         );
 
                         let summary = format_result(&command, &stdout, &stderr, exit_code, false);
-                        Ok(ToolOutput {
-                            summary,
-                            raw: Some(json!({
-                                "command": command,
-                                "exit_code": exit_code,
-                                "stdout": stdout,
-                                "stderr": stderr,
-                                "timed_out": false,
-                            })),
-                            control_flow: ToolControlFlow::Continue,
-                            truncation: None,
-                        })
+                        Ok(vec![Content::text(summary)])
                     }
                     Err(e) => {
                         tracing::error!(error = %e, command = %command, "execute_command: wait failed");
-                        Ok(ToolOutput {
-                            summary: format!("[Error]: Command execution failed: {}", e),
-                            raw: Some(json!({ "error": e.to_string(), "command": command })),
-                            control_flow: ToolControlFlow::Continue,
-                            truncation: None,
-                        })
+                        Ok(vec![Content::text(format!(
+                            "[Error]: Command execution failed: {}",
+                            e
+                        ))])
                     }
                 }
             }
@@ -205,19 +184,10 @@ impl Tool for LocalShellTool {
                         .await;
                 }
                 tracing::warn!(command = %command, timeout_ms = self.timeout_ms, "execute_command: timed out and killed");
-                Ok(ToolOutput {
-                    summary: format!(
-                        "[Command Timed Out after {}ms]\ncommand: {}",
-                        self.timeout_ms, command
-                    ),
-                    raw: Some(json!({
-                        "command": command,
-                        "timed_out": true,
-                        "timeout_ms": self.timeout_ms,
-                    })),
-                    control_flow: ToolControlFlow::Continue,
-                    truncation: None,
-                })
+                Ok(vec![Content::text(format!(
+                    "[Command Timed Out after {}ms]\ncommand: {}",
+                    self.timeout_ms, command
+                ))])
             }
         };
 
@@ -263,13 +233,11 @@ mod tests {
     #[test]
     fn test_definition() {
         let tool = LocalShellTool::new(30000);
-        let def = tool.definition();
-        assert_eq!(def["function"]["name"], "execute_command");
-        assert!(
-            def["function"]["description"]
-                .as_str()
-                .unwrap()
-                .contains("shell")
-        );
+        assert_eq!(tool.name(), "execute_command");
+        assert!(tool.description().contains("shell"));
+        let schema = tool.schema();
+        assert_eq!(schema["type"], "object");
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("command")));
     }
 }

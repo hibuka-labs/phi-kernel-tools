@@ -39,7 +39,7 @@ pub fn create_all_tools(runtime: Arc<MultiAgentRuntime>) -> Vec<Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_base::{Language, LlmClient, ToolControlFlow, TypedTool};
+    use agent_base::{Language, LlmClient, TypedTool};
     use agent_works::multi_agent::MultiAgentConfig;
     use std::pin::Pin;
     use tokio_util::sync::CancellationToken;
@@ -97,7 +97,7 @@ mod tests {
     }
 
     fn make_runtime() -> Arc<MultiAgentRuntime> {
-        let client = Arc::new(StubClient);
+        let client = agent_base::llm::adapt(Arc::new(StubClient));
         let cancel = CancellationToken::new();
         Arc::new(MultiAgentRuntime::new(
             MultiAgentConfig::enabled(),
@@ -110,25 +110,17 @@ mod tests {
     }
 
     fn make_tool_ctx() -> agent_base::ToolContext {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<agent_base::UserEvent>();
-        agent_base::ToolContext {
-            session_id: agent_base::SessionId::new(1),
-            user_event_tx: tx,
-            llm_client: None,
-            session_store: None,
-            language: Language::En,
-            cancel_token: CancellationToken::new(),
-        }
+        agent_base::ToolContext::for_test()
     }
 
-    // ── name / description / schema / control_flow ──
+    // ── name / description / schema ──
 
     #[test]
     fn test_spawn_agent_tool_metadata() {
         let t = SpawnAgentTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "spawn_agent");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
-        let schema = t.parameters_schema();
+        let schema = t.schema();
         assert_eq!(schema["type"], "object");
         assert!(
             schema["required"]
@@ -142,10 +134,6 @@ mod tests {
                 .unwrap()
                 .contains(&"message".into())
         );
-        assert!(matches!(
-            SpawnAgentTool::control_flow(),
-            ToolControlFlow::Continue
-        ));
     }
 
     #[test]
@@ -153,7 +141,7 @@ mod tests {
         let t = SendMessageTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "send_message");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
-        let schema = t.parameters_schema();
+        let schema = t.schema();
         assert_eq!(schema["type"], "object");
         assert!(
             schema["required"]
@@ -161,10 +149,6 @@ mod tests {
                 .unwrap()
                 .contains(&"agent_path".into())
         );
-        assert!(matches!(
-            SendMessageTool::control_flow(),
-            ToolControlFlow::Continue
-        ));
     }
 
     #[test]
@@ -172,17 +156,13 @@ mod tests {
         let t = FollowupTaskTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "followup_task");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
-        let schema = t.parameters_schema();
+        let schema = t.schema();
         assert!(
             schema["required"]
                 .as_array()
                 .unwrap()
                 .contains(&"agent_path".into())
         );
-        assert!(matches!(
-            FollowupTaskTool::control_flow(),
-            ToolControlFlow::Continue
-        ));
     }
 
     #[test]
@@ -190,13 +170,10 @@ mod tests {
         let t = WaitAgentTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "wait_agent");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
-        let schema = t.parameters_schema();
+        let schema = t.schema();
         assert_eq!(schema["type"], "object");
-        assert!(schema["required"].as_array().unwrap().is_empty());
-        assert!(matches!(
-            WaitAgentTool::control_flow(),
-            ToolControlFlow::Continue
-        ));
+        // All fields are optional, so schemars omits the `required` key.
+        assert!(schema.get("required").is_none());
     }
 
     #[test]
@@ -204,12 +181,8 @@ mod tests {
         let t = ListAgentsTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "list_agents");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
-        let schema = t.parameters_schema();
+        let schema = t.schema();
         assert_eq!(schema["type"], "object");
-        assert!(matches!(
-            ListAgentsTool::control_flow(),
-            ToolControlFlow::Continue
-        ));
     }
 
     #[test]
@@ -217,17 +190,13 @@ mod tests {
         let t = CloseAgentTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "close_agent");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
-        let schema = t.parameters_schema();
+        let schema = t.schema();
         assert!(
             schema["required"]
                 .as_array()
                 .unwrap()
                 .contains(&"agent_path".into())
         );
-        assert!(matches!(
-            CloseAgentTool::control_flow(),
-            ToolControlFlow::Continue
-        ));
     }
 
     // ── format_output ──
@@ -239,7 +208,8 @@ mod tests {
             agent_path: "root/w1".into(),
             message: "ok".into(),
         });
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let text = agent_base::tool::content_text(&[out]);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["agent_path"], "root/w1");
         assert_eq!(v["message"], "ok");
     }
@@ -248,7 +218,8 @@ mod tests {
     fn test_send_message_format_output() {
         let t = SendMessageTool::new(make_runtime());
         let out = t.format_output(SendMessageOutput { delivered: true });
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let text = agent_base::tool::content_text(&[out]);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["delivered"], true);
     }
 
@@ -259,7 +230,8 @@ mod tests {
             accepted: true,
             agent_path: "root/w1".into(),
         });
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let text = agent_base::tool::content_text(&[out]);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["accepted"], true);
     }
 
@@ -272,7 +244,8 @@ mod tests {
             agent_path: None,
             has_more: false,
         });
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let text = agent_base::tool::content_text(&[out]);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["status"], "timeout");
         assert_eq!(v["has_more"], false);
     }
@@ -285,7 +258,8 @@ mod tests {
             previous_status: "idle".into(),
             message: "done".into(),
         });
-        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let text = agent_base::tool::content_text(&[out]);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["closed"], true);
     }
 
@@ -444,6 +418,7 @@ mod tests {
                     model: None,
                     reasoning_effort: None,
                     fork_history: None,
+                    depth: 1,
                 },
                 &ctx,
             )
@@ -478,6 +453,7 @@ mod tests {
                     model: None,
                     reasoning_effort: None,
                     fork_history: None,
+                    depth: 1,
                 },
                 &ctx,
             )
@@ -491,7 +467,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_agent_limit_exceeded() {
-        let client = Arc::new(StubClient);
+        let client = agent_base::llm::adapt(Arc::new(StubClient));
         let cancel = CancellationToken::new();
         let config = MultiAgentConfig {
             enabled: true,
@@ -521,6 +497,7 @@ mod tests {
                     model: None,
                     reasoning_effort: None,
                     fork_history: None,
+                    depth: 1,
                 },
                 &ctx,
             )
@@ -539,6 +516,7 @@ mod tests {
                     model: None,
                     reasoning_effort: None,
                     fork_history: None,
+                    depth: 1,
                 },
                 &ctx,
             )

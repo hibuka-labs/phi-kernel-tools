@@ -1,22 +1,28 @@
 use std::sync::Arc;
 
-use agent_base::{AgentResult, ToolContext, ToolControlFlow, TypedTool};
+use agent_base::{AgentResult, ToolContext, TypedTool};
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SpawnAgentArgs {
+    /// Unique name for this sub-agent (used in agent path)
     pub task_name: String,
+    /// Initial task description for the sub-agent
     pub message: String,
+    /// Optional role type that maps to a preset configuration
     #[serde(default)]
     pub agent_type: Option<String>,
+    /// Optional custom system prompt (overrides agent_type)
     #[serde(default)]
     pub system_prompt: Option<String>,
+    /// Optional model override
     #[serde(default)]
     pub model: Option<String>,
+    /// Optional reasoning effort (low/medium/high)
     #[serde(default)]
     pub reasoning_effort: Option<String>,
+    /// Optional history: 'none' (default), 'all', or a number N
     #[serde(default)]
     pub fork_history: Option<String>,
     /// Nesting depth for this agent. 1 = direct child of root, 2 = grandchild, etc.
@@ -58,55 +64,6 @@ impl TypedTool for SpawnAgentTool {
         "Spawn a new sub-agent to execute a task independently.\n\
          The sub-agent runs concurrently and reports results via its mailbox.\n\
          Use agent_type for preset roles, or system_prompt for custom instructions."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "task_name": {
-                    "type": "string",
-                    "description": "Unique name for this sub-agent (used in agent path)"
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Initial task description for the sub-agent"
-                },
-                "agent_type": {
-                    "type": "string",
-                    "description": "Optional role type that maps to a preset configuration"
-                },
-                "system_prompt": {
-                    "type": "string",
-                    "description": "Optional custom system prompt (overrides agent_type)"
-                },
-                "model": {
-                    "type": "string",
-                    "description": "Optional model override"
-                },
-                "reasoning_effort": {
-                    "type": "string",
-                    "description": "Optional reasoning effort (low/medium/high)"
-                },
-                "fork_history": {
-                    "type": "string",
-                    "description": "Optional history: 'none' (default), 'all', or a number N"
-                },
-                "depth": {
-                    "type": "integer",
-                    "description": "Nesting depth: 1=direct child, 2=grandchild, etc. Default 1."
-                }
-            },
-            "required": ["task_name", "message"]
-        })
-    }
-
-    fn control_flow() -> ToolControlFlow {
-        ToolControlFlow::Continue
-    }
-
-    fn format_output(&self, output: Self::Output) -> String {
-        serde_json::to_string(&output).unwrap_or_default()
     }
 
     async fn call_typed(&self, args: Self::Args, ctx: &ToolContext) -> AgentResult<Self::Output> {

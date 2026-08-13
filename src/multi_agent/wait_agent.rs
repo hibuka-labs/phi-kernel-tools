@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
-use agent_base::{AgentResult, ToolContext, ToolControlFlow, TypedTool};
+use agent_base::{AgentResult, ToolContext, TypedTool};
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WaitAgentArgs {
+    /// Optional: specific agent to wait for. Omit for any.
     #[serde(default)]
     pub agent_path: Option<String>,
+    /// Max wait time in ms (default: 120000 = 2 min)
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
 }
@@ -49,31 +50,6 @@ impl TypedTool for WaitAgentTool {
          If agent_path is omitted, waits for ANY sub-agent.\n\
          Returns timeout if no agent completes within the timeout.\n\
          Check has_more for additional pending results."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "agent_path": {
-                    "type": "string",
-                    "description": "Optional: specific agent to wait for. Omit for any."
-                },
-                "timeout_ms": {
-                    "type": "number",
-                    "description": "Max wait time in ms (default: 120000 = 2 min)"
-                }
-            },
-            "required": []
-        })
-    }
-
-    fn control_flow() -> ToolControlFlow {
-        ToolControlFlow::Continue
-    }
-
-    fn format_output(&self, output: Self::Output) -> String {
-        serde_json::to_string(&output).unwrap_or_default()
     }
 
     async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {

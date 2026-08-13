@@ -1,20 +1,12 @@
 //! Benchmarks: kernel file tools (read_file, write_file, list_files).
 
-use agent_base::{Language, SessionId, Tool, ToolContext, UserEvent};
+use agent_base::{Tool, ToolContext};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use phi_kernel_tools::file::{ListFilesTool, ReadFileTool, WriteFileTool};
 use tempfile::TempDir;
 
 fn make_ctx() -> ToolContext {
-    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<UserEvent>();
-    ToolContext {
-        session_id: SessionId::new(1),
-        user_event_tx: tx,
-        llm_client: None,
-        session_store: None,
-        language: Language::En,
-        cancel_token: tokio_util::sync::CancellationToken::new(),
-    }
+    ToolContext::for_test()
 }
 
 fn bench_read_file(c: &mut Criterion) {

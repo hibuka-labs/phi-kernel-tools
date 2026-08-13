@@ -45,7 +45,9 @@ impl LlmClient for StubClient {
     {
         let chunks: Vec<AgentResult<StreamChunk>> = vec![
             Ok(StreamChunk::Text("ok".to_string())),
-            Ok(StreamChunk::Stop),
+            Ok(StreamChunk::Stop {
+                finish_reason: Some("stop".to_string()),
+            }),
         ];
         Ok(Box::pin(futures_util::stream::iter(chunks)))
     }
@@ -63,8 +65,8 @@ impl LlmClient for StubClient {
 }
 
 #[cfg(feature = "multi-agent")]
-fn make_client() -> Arc<dyn LlmClient> {
-    Arc::new(StubClient)
+fn make_client() -> Arc<dyn agent_base::StreamClient> {
+    agent_base::llm::adapt(Arc::new(StubClient))
 }
 
 /// Helper: get sorted list of registered tool names from a runtime.
@@ -83,7 +85,7 @@ fn registered_tool_names(runtime: &agent_base::AgentRuntime) -> Vec<String> {
 #[cfg(feature = "multi-agent")]
 async fn test_inject_multi_agent_tools_via_factory() {
     let client = make_client();
-    let factory: MultiAgentToolFactory = Arc::new(|rt| multi_agent::create_all_tools(rt));
+    let factory: MultiAgentToolFactory = Arc::new(multi_agent::create_all_tools);
 
     let runtime = AgentBuilder::new(client)
         .with_multi_agent(MultiAgentConfig::enabled())
@@ -171,7 +173,7 @@ async fn test_create_all_tools_returns_six_distinct_tools() {
 #[cfg(feature = "multi-agent")]
 async fn test_multi_agent_disabled_does_not_register_tools() {
     let client = make_client();
-    let factory: MultiAgentToolFactory = Arc::new(|rt| multi_agent::create_all_tools(rt));
+    let factory: MultiAgentToolFactory = Arc::new(multi_agent::create_all_tools);
 
     // Default config has enabled=false
     let runtime = AgentBuilder::new(client)

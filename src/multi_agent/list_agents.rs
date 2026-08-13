@@ -1,11 +1,10 @@
 use std::sync::Arc;
 
-use agent_base::{AgentResult, ToolContext, ToolControlFlow, TypedTool};
+use agent_base::{AgentResult, ToolContext, TypedTool};
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListAgentsArgs {}
 
 #[derive(Debug, Serialize)]
@@ -37,22 +36,6 @@ impl TypedTool for ListAgentsTool {
     fn description(&self) -> &'static str {
         "List all active sub-agents and their status.\n\
          Status: idle (ready), running (executing), done (completed, awaiting close or new task)."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {},
-            "required": []
-        })
-    }
-
-    fn control_flow() -> ToolControlFlow {
-        ToolControlFlow::Continue
-    }
-
-    fn format_output(&self, output: Self::Output) -> String {
-        serde_json::to_string(&output).unwrap_or_default()
     }
 
     async fn call_typed(&self, _args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agent_base::{AgentResult, Tool, ToolContext, ToolControlFlow, ToolOutput};
+use agent_base::{AgentResult, Content, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -29,31 +29,28 @@ impl Tool for ReadFileTool {
         "read_file"
     }
 
-    fn definition(&self) -> Value {
+    fn description(&self) -> &'static str {
+        "Read a file from the workspace. Returns the file content with line numbers. Supports pagination with offset and limit parameters. Use this to read source code, configuration files, documentation, or any text file."
+    }
+
+    fn schema(&self) -> Value {
         json!({
-            "type": "function",
-            "function": {
-                "name": "read_file",
-                "description": "Read a file from the workspace. Returns the file content with line numbers. Supports pagination with offset and limit parameters. Use this to read source code, configuration files, documentation, or any text file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file, relative to the workspace root. E.g. 'src/main.rs', 'docs/README.md'."
-                        },
-                        "offset": {
-                            "type": "integer",
-                            "description": "Line number to start reading from (0-based). Default: 0."
-                        },
-                        "limit": {
-                            "type": "integer",
-                            "description": "Maximum number of lines to read. Default: 2000. Set higher if you need more context."
-                        }
-                    },
-                    "required": ["path"]
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file, relative to the workspace root. E.g. 'src/main.rs', 'docs/README.md'."
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Line number to start reading from (0-based). Default: 0."
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of lines to read. Default: 2000. Set higher if you need more context."
                 }
-            }
+            },
+            "required": ["path"]
         })
     }
 
@@ -68,7 +65,7 @@ impl Tool for ReadFileTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<ToolOutput> {
+    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let path_str = args
             .get("path")
             .and_then(Value::as_str)
@@ -77,12 +74,9 @@ impl Tool for ReadFileTool {
             .to_string();
 
         if path_str.is_empty() {
-            return Ok(ToolOutput {
-                summary: "[Error]: No file path provided.".to_string(),
-                raw: Some(json!({"error": "no path provided"})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(
+                "[Error]: No file path provided.".to_string(),
+            )]);
         }
 
         let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -97,44 +91,33 @@ impl Tool for ReadFileTool {
         let file_path = match resolve_path(&self.workspace_root, &path_str) {
             Ok(p) => p,
             Err(e) => {
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: {}", e),
-                    raw: Some(json!({"error": e, "path": path_str})),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!("[Error]: {}", e))]);
             }
         };
 
         // Check if path exists and is a file
         if !file_path.exists() {
-            return Ok(ToolOutput {
-                summary: format!("[Error]: File not found: {}", path_str),
-                raw: Some(json!({"error": "file not found", "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: File not found: {}",
+                path_str
+            ))]);
         }
 
         if !file_path.is_file() {
-            return Ok(ToolOutput {
-                summary: format!("[Error]: Path is not a file: {}", path_str),
-                raw: Some(json!({"error": "not a file", "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Path is not a file: {}",
+                path_str
+            ))]);
         }
 
         // Read the file
         let content = match std::fs::read_to_string(&file_path) {
             Ok(c) => c,
             Err(e) => {
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: Failed to read file: {}", e),
-                    raw: Some(json!({"error": e.to_string(), "path": path_str})),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!(
+                    "[Error]: Failed to read file: {}",
+                    e
+                ))]);
             }
         };
 
@@ -178,37 +161,17 @@ impl Tool for ReadFileTool {
             "read_file"
         );
 
-        Ok(ToolOutput {
-            summary: output,
-            raw: Some(json!({
-                "path": path_str,
-                "total_lines": total_lines,
-                "start_line": if total_lines == 0 { 0 } else { start + 1 },
-                "end_line": end,
-                "offset": offset,
-                "limit": limit,
-                "content": selected.join("\n"),
-            })),
-            control_flow: ToolControlFlow::Break,
-            truncation: None,
-        })
+        Ok(vec![Content::text(output)])
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_base::tool::content_text;
 
     fn dummy_ctx() -> ToolContext {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        ToolContext {
-            session_id: agent_base::SessionId::new(0),
-            user_event_tx: tx,
-            llm_client: None,
-            session_store: None,
-            language: agent_base::Language::En,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-        }
+        ToolContext::for_test()
     }
 
     fn setup_temp_workspace() -> (tempfile::TempDir, ReadFileTool) {
@@ -227,10 +190,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("line1"));
-        assert!(result.summary.contains("line2"));
-        assert!(result.summary.contains("line3"));
-        assert!(result.summary.contains("lines 1-3 of 3"));
+        assert!(content_text(&result).contains("line1"));
+        assert!(content_text(&result).contains("line2"));
+        assert!(content_text(&result).contains("line3"));
+        assert!(content_text(&result).contains("lines 1-3 of 3"));
     }
 
     #[tokio::test]
@@ -251,11 +214,11 @@ mod tests {
             .unwrap();
 
         // offset=3 means lines starting from index 3 (0-based), i.e. line4, line5
-        assert!(result.summary.contains("line4"));
-        assert!(result.summary.contains("line5"));
-        assert!(!result.summary.contains("line3"));
-        assert!(!result.summary.contains("line6"));
-        assert!(result.summary.contains("lines 4-5 of 10"));
+        assert!(content_text(&result).contains("line4"));
+        assert!(content_text(&result).contains("line5"));
+        assert!(!content_text(&result).contains("line3"));
+        assert!(!content_text(&result).contains("line6"));
+        assert!(content_text(&result).contains("lines 4-5 of 10"));
     }
 
     #[tokio::test]
@@ -267,7 +230,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("not found"));
+        assert!(content_text(&result).contains("not found"));
     }
 
     #[tokio::test]
@@ -280,7 +243,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("not a file"));
+        assert!(content_text(&result).contains("not a file"));
     }
 
     #[tokio::test]
@@ -293,7 +256,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("(file is empty)"));
+        assert!(content_text(&result).contains("(file is empty)"));
     }
 
     #[tokio::test]
@@ -302,7 +265,7 @@ mod tests {
 
         let result = tool.call(&json!({}), &dummy_ctx()).await.unwrap();
 
-        assert!(result.summary.contains("No file path provided"));
+        assert!(content_text(&result).contains("No file path provided"));
     }
 
     #[tokio::test]
@@ -314,7 +277,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Error"));
+        assert!(content_text(&result).contains("Error"));
     }
 
     #[tokio::test]
@@ -328,8 +291,8 @@ mod tests {
             .unwrap();
 
         // offset beyond end should return header only, no content lines
-        assert!(result.summary.contains("File: short.txt"));
-        assert!(!result.summary.contains("only one line"));
+        assert!(content_text(&result).contains("File: short.txt"));
+        assert!(!content_text(&result).contains("only one line"));
     }
 
     #[tokio::test]
@@ -337,11 +300,9 @@ mod tests {
         let tool = ReadFileTool::new(PathBuf::from("/tmp"));
         assert_eq!(tool.name(), "read_file");
 
-        let def = tool.definition();
-        assert_eq!(def["function"]["name"], "read_file");
-        let params = &def["function"]["parameters"];
-        assert_eq!(params["type"], "object");
-        let required = params["required"].as_array().unwrap();
+        let schema = tool.schema();
+        assert_eq!(schema["type"], "object");
+        let required = schema["required"].as_array().unwrap();
         assert!(required.iter().any(|v| v.as_str() == Some("path")));
     }
 

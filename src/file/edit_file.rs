@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use agent_base::{AgentResult, Tool, ToolContext, ToolControlFlow, ToolOutput};
+use agent_base::{AgentResult, Content, Tool, ToolContext};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -49,45 +49,42 @@ impl Tool for EditFileTool {
         "edit_file"
     }
 
-    fn definition(&self) -> Value {
+    fn description(&self) -> &'static str {
+        "Make precise text replacements in an existing file.\n\
+        Provide one or more edits, each with old_text (text to find) and new_text (replacement).\n\
+        Each old_text must appear exactly once in the file.\n\
+        Multiple edits are applied to the original file (not incrementally).\n\
+        Use this instead of write_file when you only need to change specific parts of a file."
+    }
+
+    fn schema(&self) -> Value {
         json!({
-            "type": "function",
-            "function": {
-                "name": "edit_file",
-                "description": "Make precise text replacements in an existing file.\n\
-                Provide one or more edits, each with old_text (text to find) and new_text (replacement).\n\
-                Each old_text must appear exactly once in the file.\n\
-                Multiple edits are applied to the original file (not incrementally).\n\
-                Use this instead of write_file when you only need to change specific parts of a file.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Path to the file to edit, relative to the workspace root."
-                        },
-                        "edits": {
-                            "type": "array",
-                            "description": "List of edit operations. Each edit has old_text and new_text.",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "old_text": {
-                                        "type": "string",
-                                        "description": "The exact text to find and replace. Must appear exactly once in the file."
-                                    },
-                                    "new_text": {
-                                        "type": "string",
-                                        "description": "The replacement text."
-                                    }
-                                },
-                                "required": ["old_text", "new_text"]
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file to edit, relative to the workspace root."
+                },
+                "edits": {
+                    "type": "array",
+                    "description": "List of edit operations. Each edit has old_text and new_text.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_text": {
+                                "type": "string",
+                                "description": "The exact text to find and replace. Must appear exactly once in the file."
+                            },
+                            "new_text": {
+                                "type": "string",
+                                "description": "The replacement text."
                             }
-                        }
-                    },
-                    "required": ["path", "edits"]
+                        },
+                        "required": ["old_text", "new_text"]
+                    }
                 }
-            }
+            },
+            "required": ["path", "edits"]
         })
     }
 
@@ -103,7 +100,7 @@ impl Tool for EditFileTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<ToolOutput> {
+    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let path_str = args
             .get("path")
             .and_then(Value::as_str)
@@ -119,36 +116,24 @@ impl Tool for EditFileTool {
             Some(raw) => match serde_json::from_value(raw.clone()) {
                 Ok(edits) => edits,
                 Err(e) => {
-                    return Ok(ToolOutput {
-                        summary: format!(
-                            "[Error]: Failed to parse edits: {}. Expected array of {{old_text, new_text}} objects.",
-                            e
-                        ),
-                        raw: Some(json!({"error": e.to_string(), "path": path_str})),
-                        control_flow: ToolControlFlow::Break,
-                        truncation: None,
-                    });
+                    return Ok(vec![Content::text(format!(
+                        "[Error]: Failed to parse edits: {}. Expected array of {{old_text, new_text}} objects.",
+                        e
+                    ))]);
                 }
             },
             None => {
-                return Ok(ToolOutput {
-                    summary: "[Error]: No edits provided. Expected array of {old_text, new_text} objects."
+                return Ok(vec![Content::text(
+                    "[Error]: No edits provided. Expected array of {old_text, new_text} objects."
                         .to_string(),
-                    raw: Some(json!({"error": "no edits provided", "path": path_str})),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                )]);
             }
         };
 
         if edits.is_empty() {
-            return Ok(ToolOutput {
-                summary: "[Error]: Edits array is empty. Provide at least one edit operation."
-                    .to_string(),
-                raw: Some(json!({"error": "empty edits", "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(
+                "[Error]: Edits array is empty. Provide at least one edit operation.".to_string(),
+            )]);
         }
 
         // Resolve and validate the path
@@ -160,33 +145,27 @@ impl Tool for EditFileTool {
         };
 
         if !file_path.exists() {
-            return Ok(ToolOutput {
-                summary: format!("[Error]: File not found: {}", path_str),
-                raw: Some(json!({"error": "file not found", "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: File not found: {}",
+                path_str
+            ))]);
         }
 
         if !file_path.is_file() {
-            return Ok(ToolOutput {
-                summary: format!("[Error]: Path is not a file: {}", path_str),
-                raw: Some(json!({"error": "not a file", "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Path is not a file: {}",
+                path_str
+            ))]);
         }
 
         // Read original file content
         let original = match std::fs::read_to_string(&file_path) {
             Ok(c) => c,
             Err(e) => {
-                return Ok(ToolOutput {
-                    summary: format!("[Error]: Failed to read file: {}", e),
-                    raw: Some(json!({"error": e.to_string(), "path": path_str})),
-                    control_flow: ToolControlFlow::Break,
-                    truncation: None,
-                });
+                return Ok(vec![Content::text(format!(
+                    "[Error]: Failed to read file: {}",
+                    e
+                ))]);
             }
         };
 
@@ -195,12 +174,7 @@ impl Tool for EditFileTool {
 
         // Check for overlapping edits
         if let Err(overlap_err) = check_overlaps(&original, &edits) {
-            return Ok(ToolOutput {
-                summary: format!("[Error]: {}", overlap_err),
-                raw: Some(json!({"error": overlap_err, "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!("[Error]: {}", overlap_err))]);
         }
 
         // Apply edits with 4-level fallback matching
@@ -214,17 +188,10 @@ impl Tool for EditFileTool {
                     applied += 1;
                 }
                 Err(err) => {
-                    return Ok(ToolOutput {
-                        summary: format!("[Error]: Edit {} failed: {}", i, err),
-                        raw: Some(json!({
-                            "error": err,
-                            "path": path_str,
-                            "edit_index": i,
-                            "old_text": edit.old_text,
-                        })),
-                        control_flow: ToolControlFlow::Break,
-                        truncation: None,
-                    });
+                    return Ok(vec![Content::text(format!(
+                        "[Error]: Edit {} failed: {}",
+                        i, err
+                    ))]);
                 }
             }
         }
@@ -236,22 +203,18 @@ impl Tool for EditFileTool {
         let temp_path = temp_path_for(&file_path)?;
         if let Err(e) = std::fs::write(&temp_path, &modified) {
             let _ = std::fs::remove_file(&temp_path);
-            return Ok(ToolOutput {
-                summary: format!("[Error]: Failed to write file: {}", e),
-                raw: Some(json!({"error": e.to_string(), "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Failed to write file: {}",
+                e
+            ))]);
         }
 
         if let Err(e) = std::fs::rename(&temp_path, &file_path) {
             let _ = std::fs::remove_file(&temp_path);
-            return Ok(ToolOutput {
-                summary: format!("[Error]: Failed to save file (rename): {}", e),
-                raw: Some(json!({"error": e.to_string(), "path": path_str})),
-                control_flow: ToolControlFlow::Break,
-                truncation: None,
-            });
+            return Ok(vec![Content::text(format!(
+                "[Error]: Failed to save file (rename): {}",
+                e
+            ))]);
         }
 
         tracing::info!(
@@ -260,27 +223,17 @@ impl Tool for EditFileTool {
             "edit_file"
         );
 
-        Ok(ToolOutput {
-            summary: format!("Successfully applied {} edit(s) to {}.", applied, path_str),
-            raw: Some(json!({
-                "path": path_str,
-                "edits_applied": applied,
-            })),
-            control_flow: ToolControlFlow::Break,
-            truncation: None,
-        })
+        Ok(vec![Content::text(format!(
+            "Successfully applied {} edit(s) to {}.",
+            applied, path_str
+        ))])
     }
 }
 
 // ── Helpers ──
 
-fn error_output(message: &str, path: &str) -> ToolOutput {
-    ToolOutput {
-        summary: format!("[Error]: {}", message),
-        raw: Some(json!({"error": message, "path": path})),
-        control_flow: ToolControlFlow::Break,
-        truncation: None,
-    }
+fn error_output(message: &str, _path: &str) -> Vec<Content> {
+    vec![Content::text(format!("[Error]: {}", message))]
 }
 
 /// Detect the dominant line ending style in the content.
@@ -582,17 +535,10 @@ fn apply_replace(content: &str, pos: usize, old: &str, new: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_base::tool::content_text;
 
     fn dummy_ctx() -> ToolContext {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        ToolContext {
-            session_id: agent_base::SessionId::new(0),
-            user_event_tx: tx,
-            llm_client: None,
-            session_store: None,
-            language: agent_base::Language::En,
-            cancel_token: tokio_util::sync::CancellationToken::new(),
-        }
+        ToolContext::for_test()
     }
 
     fn setup_temp_workspace() -> (tempfile::TempDir, EditFileTool) {
@@ -784,7 +730,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Successfully applied 1 edit"));
+        assert!(content_text(&result).contains("Successfully applied 1 edit"));
         let content = std::fs::read_to_string(dir.path().join("test.txt")).unwrap();
         assert_eq!(content, "hi world\n");
     }
@@ -808,7 +754,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Successfully applied 2 edit"));
+        assert!(content_text(&result).contains("Successfully applied 2 edit"));
         let content = std::fs::read_to_string(dir.path().join("test.rs")).unwrap();
         assert_eq!(content, "fn new() {}\nfn another() {}\n");
     }
@@ -826,7 +772,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.summary.contains("not found"));
+        assert!(content_text(&result).contains("not found"));
     }
 
     #[tokio::test]
@@ -845,7 +791,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("not unique"));
+        assert!(content_text(&result).contains("not unique"));
     }
 
     #[tokio::test]
@@ -858,7 +804,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.summary.contains("No file path"));
+        assert!(content_text(&result).contains("No file path"));
     }
 
     #[tokio::test]
@@ -868,7 +814,7 @@ mod tests {
             .call(&json!({"path": "test.txt"}), &dummy_ctx())
             .await
             .unwrap();
-        assert!(result.summary.contains("No edits provided"));
+        assert!(content_text(&result).contains("No edits provided"));
     }
 
     #[tokio::test]
@@ -878,7 +824,7 @@ mod tests {
             .call(&json!({"path": "test.txt", "edits": []}), &dummy_ctx())
             .await
             .unwrap();
-        assert!(result.summary.contains("empty"));
+        assert!(content_text(&result).contains("empty"));
     }
 
     #[tokio::test]
@@ -897,7 +843,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("Successfully applied 1 edit"));
+        assert!(content_text(&result).contains("Successfully applied 1 edit"));
         let content = std::fs::read_to_string(dir.path().join("crlf.txt")).unwrap();
         assert_eq!(content, "line1\r\nLINE2\r\nline3\r\n");
     }
@@ -921,7 +867,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(result.summary.contains("overlap"));
+        assert!(content_text(&result).contains("overlap"));
     }
 
     #[tokio::test]
@@ -937,15 +883,19 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.summary.contains("Error"));
+        assert!(content_text(&result).contains("Error"));
     }
 
     #[tokio::test]
     async fn test_name_and_definition() {
         let tool = EditFileTool::new(PathBuf::from("/tmp"));
         assert_eq!(tool.name(), "edit_file");
-        let def = tool.definition();
-        assert_eq!(def["function"]["name"], "edit_file");
+        assert!(tool.description().contains("text replacements"));
+        let schema = tool.schema();
+        assert_eq!(schema["type"], "object");
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&json!("path")));
+        assert!(required.contains(&json!("edits")));
     }
 
     #[tokio::test]

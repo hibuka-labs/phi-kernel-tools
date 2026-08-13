@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use agent_base::{AgentResult, ToolContext, ToolControlFlow, TypedTool};
+use agent_base::{AgentResult, ToolContext, TypedTool};
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CloseAgentArgs {
+    /// Agent path to close (e.g., 'root/searcher')
     pub agent_path: String,
 }
 
@@ -40,27 +40,6 @@ impl TypedTool for CloseAgentTool {
         "Close a sub-agent and release its resources.\n\
          Immediately stops the agent (aborts current task) and removes it.\n\
          Pending wait_agent calls for this agent return status='closed'."
-    }
-
-    fn parameters_schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "agent_path": {
-                    "type": "string",
-                    "description": "Agent path to close (e.g., 'root/searcher')"
-                }
-            },
-            "required": ["agent_path"]
-        })
-    }
-
-    fn control_flow() -> ToolControlFlow {
-        ToolControlFlow::Continue
-    }
-
-    fn format_output(&self, output: Self::Output) -> String {
-        serde_json::to_string(&output).unwrap_or_default()
     }
 
     async fn call_typed(&self, args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
