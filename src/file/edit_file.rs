@@ -712,6 +712,94 @@ mod tests {
         assert!(err.contains("not found"));
     }
 
+    #[test]
+    fn test_find_and_replace_ambiguity_after_prior_edits() {
+        // current has two "foo" (from a prior edit), original had only one.
+        let err = find_and_replace(
+            "foo foo",
+            "foo bar",
+            &Edit {
+                old_text: "foo".to_string(),
+                new_text: "baz".to_string(),
+            },
+            0,
+        )
+        .unwrap_err();
+        assert!(err.contains("after previous edits"));
+    }
+
+    #[test]
+    fn test_find_and_replace_rstrip_single() {
+        // old_text has trailing whitespace not present exactly in current,
+        // but the rstripped form matches once.
+        let result = find_and_replace(
+            "hello world  x",
+            "hello world  x",
+            &Edit {
+                old_text: "world \n".to_string(),
+                new_text: "earth".to_string(),
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(result, "hello earthx");
+    }
+
+    #[test]
+    fn test_find_and_replace_rstrip_multiple() {
+        let err = find_and_replace(
+            "world  x world  y",
+            "world  x world  y",
+            &Edit {
+                old_text: "world \n".to_string(),
+                new_text: "earth".to_string(),
+            },
+            0,
+        )
+        .unwrap_err();
+        assert!(err.contains("trailing whitespace stripped"));
+    }
+
+    #[test]
+    fn test_find_and_replace_trim_single() {
+        // old_text has leading+trailing whitespace; trimmed form matches once.
+        let result = find_and_replace(
+            "hello  world  x",
+            "hello  world  x",
+            &Edit {
+                old_text: "   world  ".to_string(),
+                new_text: "earth".to_string(),
+            },
+            0,
+        )
+        .unwrap();
+        assert_eq!(result, "helloearthx");
+    }
+
+    #[test]
+    fn test_find_and_replace_trim_multiple() {
+        let err = find_and_replace(
+            "  world  x  world  y",
+            "  world  x  world  y",
+            &Edit {
+                old_text: "   world  ".to_string(),
+                new_text: "earth".to_string(),
+            },
+            0,
+        )
+        .unwrap_err();
+        assert!(err.contains("whitespace trimmed"));
+    }
+
+    #[test]
+    fn test_find_nfc_matches() {
+        // unicode_normalize is currently identity, so NFC matching degenerates
+        // to a plain substring match — still exercised to lock in behaviour.
+        let m = find_nfc_matches("héllo wörld", "wörld");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].1, "wörld");
+    }
+
     // ── Full tool integration tests ──
 
     #[tokio::test]
