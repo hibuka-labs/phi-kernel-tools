@@ -40,7 +40,7 @@ pub fn create_all_tools(runtime: Arc<MultiAgentRuntime>) -> Vec<Arc<dyn Tool>> {
 mod tests {
     use super::*;
     use agent_base::{Language, LlmClient, TypedTool};
-    use agent_works::multi_agent::MultiAgentConfig;
+    use agent_works::multi_agent::{ChildPermissionMode, MultiAgentConfig};
     use std::pin::Pin;
     use tokio_util::sync::CancellationToken;
 
@@ -106,6 +106,7 @@ mod tests {
             cancel,
             None,
             Language::En,
+            None,
         ))
     }
 
@@ -243,6 +244,7 @@ mod tests {
             result: None,
             agent_path: None,
             has_more: false,
+            denied_tools: vec![],
         });
         let text = agent_base::tool::content_text(&[out]);
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -475,6 +477,7 @@ mod tests {
             enabled: true,
             max_sub_agents: 1,
             max_agent_depth: 1,
+            child_permission_mode: ChildPermissionMode::Full,
         };
         let rt = Arc::new(MultiAgentRuntime::new(
             config,
@@ -483,6 +486,7 @@ mod tests {
             cancel,
             None,
             Language::En,
+            None,
         ));
 
         let t = SpawnAgentTool::new(rt.clone());

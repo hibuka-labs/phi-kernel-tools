@@ -155,6 +155,7 @@ async fn test_create_all_tools_returns_six_distinct_tools() {
         cancel,
         None,
         agent_base::Language::En,
+        None,
     ));
 
     let tools = multi_agent::create_all_tools(rt);

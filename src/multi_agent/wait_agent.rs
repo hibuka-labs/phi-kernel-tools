@@ -24,6 +24,8 @@ pub struct WaitAgentOutput {
     pub result: Option<String>,
     pub agent_path: Option<String>,
     pub has_more: bool,
+    /// Tools the child attempted but was denied permission to call.
+    pub denied_tools: Vec<String>,
 }
 
 pub struct WaitAgentTool {
@@ -63,6 +65,7 @@ impl TypedTool for WaitAgentTool {
             result: result.result,
             agent_path: result.agent_path,
             has_more: result.has_more,
+            denied_tools: result.denied_tools,
         })
     }
 }
