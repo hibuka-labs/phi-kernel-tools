@@ -337,7 +337,7 @@ mod tests {
 
         // Spawn a child first
         let path = rt
-            .spawn_child("worker", "you are a worker".into(), 1, 0, vec![])
+            .spawn_child("worker", "you are a worker".into(), 1, 0, false, vec![])
             .await
             .unwrap();
 
@@ -419,6 +419,7 @@ mod tests {
                     reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
+                    full_permission: false,
                 },
                 &ctx,
             )
@@ -454,6 +455,7 @@ mod tests {
                     reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
+                    full_permission: false,
                 },
                 &ctx,
             )
@@ -498,6 +500,7 @@ mod tests {
                     reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
+                    full_permission: false,
                 },
                 &ctx,
             )
@@ -517,6 +520,7 @@ mod tests {
                     reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
+                    full_permission: false,
                 },
                 &ctx,
             )

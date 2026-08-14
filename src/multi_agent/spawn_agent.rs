@@ -29,6 +29,11 @@ pub struct SpawnAgentArgs {
     /// Defaults to 1 (direct child).
     #[serde(default = "default_depth")]
     pub depth: i32,
+    /// Whether to grant the sub-agent full permission to run tools without
+    /// approval. Default `false` = deny all approvals (safe). Set `true` only
+    /// when the sub-agent is trusted to take dangerous actions.
+    #[serde(default)]
+    pub full_permission: bool,
 }
 
 fn default_depth() -> i32 {
@@ -63,7 +68,9 @@ impl TypedTool for SpawnAgentTool {
     fn description(&self) -> &'static str {
         "Spawn a new sub-agent to execute a task independently.\n\
          The sub-agent runs concurrently and reports results via its mailbox.\n\
-         Use agent_type for preset roles, or system_prompt for custom instructions."
+         Use agent_type for preset roles, or system_prompt for custom instructions.\n\
+         Set full_permission=true only when the sub-agent may take dangerous\n\
+         actions without approval (default false = deny all)."
     }
 
     async fn call_typed(&self, args: Self::Args, ctx: &ToolContext) -> AgentResult<Self::Output> {
@@ -84,6 +91,7 @@ impl TypedTool for SpawnAgentTool {
                 system_prompt,
                 depth,
                 tool_count,
+                args.full_permission,
                 args.fork_history,
                 &ctx.session_id,
             )
