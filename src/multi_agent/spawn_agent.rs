@@ -16,12 +16,6 @@ pub struct SpawnAgentArgs {
     /// Optional custom system prompt (overrides agent_type)
     #[serde(default)]
     pub system_prompt: Option<String>,
-    /// Optional model override
-    #[serde(default)]
-    pub model: Option<String>,
-    /// Optional reasoning effort (low/medium/high)
-    #[serde(default)]
-    pub reasoning_effort: Option<String>,
     /// Optional history: 'none' (default), 'all', or a number N
     #[serde(default)]
     pub fork_history: Option<String>,

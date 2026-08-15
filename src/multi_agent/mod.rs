@@ -107,6 +107,7 @@ mod tests {
             None,
             Language::En,
             None,
+            None,
         ))
     }
 
@@ -417,8 +418,6 @@ mod tests {
                     message: "do something".into(),
                     agent_type: None,
                     system_prompt: Some("you are a helper".into()),
-                    model: None,
-                    reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
                     full_permission: false,
@@ -453,8 +452,6 @@ mod tests {
                     message: "search for info".into(),
                     agent_type: Some("researcher".into()),
                     system_prompt: None,
-                    model: None,
-                    reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
                     full_permission: false,
@@ -478,6 +475,9 @@ mod tests {
             max_sub_agents: 1,
             max_agent_depth: 1,
             child_permission_mode: ChildPermissionMode::Full,
+            child_excluded_tools: Vec::new(),
+            child_reasoning_effort: None,
+            child_read_only: true,
         };
         let rt = Arc::new(MultiAgentRuntime::new(
             config,
@@ -486,6 +486,7 @@ mod tests {
             cancel,
             None,
             Language::En,
+            None,
             None,
         ));
 
@@ -500,8 +501,6 @@ mod tests {
                     message: "task".into(),
                     agent_type: None,
                     system_prompt: None,
-                    model: None,
-                    reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
                     full_permission: false,
@@ -520,8 +519,6 @@ mod tests {
                     message: "task".into(),
                     agent_type: None,
                     system_prompt: None,
-                    model: None,
-                    reasoning_effort: None,
                     fork_history: None,
                     depth: 1,
                     full_permission: false,

@@ -61,6 +61,41 @@ fn format_result(
     }
 }
 
+/// Truncate a shell output string to the per-call output budget
+/// (`ToolContext::max_output_chars`), keeping both the head and the tail.
+///
+/// Compile/test errors cluster at the *end* of a command's output, while listing
+/// output is meaningful at the *start*, so both ends survive and the elided
+/// middle is marked. This mirrors `read_file`/`list_files`: the tool
+/// self-truncates so the engine's hard reject never fires for a noisy command.
+fn truncate_output(s: &str, max_chars: Option<usize>) -> String {
+    let Some(max_chars) = max_chars else {
+        return s.to_string();
+    };
+    let total = s.chars().count();
+    if total <= max_chars {
+        return s.to_string();
+    }
+
+    const MARKER: &str = "...[output truncated]";
+    // Reserve the marker + two joining newlines; head gets 1/3, tail 2/3.
+    let available = max_chars.saturating_sub(MARKER.chars().count() + 2);
+    let head_chars = available / 3;
+    let tail_chars = available - head_chars;
+
+    let head: String = s.chars().take(head_chars).collect();
+    let tail: String = s
+        .chars()
+        .rev()
+        .take(tail_chars)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    format!("{head}\n{MARKER}\n{tail}")
+}
+
 #[async_trait]
 impl Tool for LocalShellTool {
     fn name(&self) -> &'static str {
@@ -98,7 +133,7 @@ impl Tool for LocalShellTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
+    async fn call(&self, args: &Value, ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let command = args
             .get("command")
             .and_then(Value::as_str)
@@ -161,6 +196,7 @@ impl Tool for LocalShellTool {
                         );
 
                         let summary = format_result(&command, &stdout, &stderr, exit_code, false);
+                        let summary = truncate_output(&summary, ctx.max_output_chars);
                         Ok(vec![Content::text(summary)])
                     }
                     Err(e) => {
@@ -324,5 +360,39 @@ mod tests {
             .await
             .unwrap();
         assert!(content_text(&result).contains("Timed Out"));
+    }
+
+    #[test]
+    fn test_truncate_output_unchanged_when_under_budget() {
+        assert_eq!(truncate_output("short", Some(100)), "short");
+        assert_eq!(truncate_output("short", None), "short");
+    }
+
+    #[test]
+    fn test_truncate_output_keeps_head_and_tail() {
+        let s: String = (0..1000).map(|i| format!("L{i:03}\n")).collect();
+        let out = truncate_output(&s, Some(200));
+        let n = out.chars().count();
+        assert!(n <= 200, "output exceeds budget: {n}");
+        assert!(out.starts_with("L000"), "head missing:\n{out}");
+        assert!(out.trim_end().ends_with("L999"), "tail missing:\n{out}");
+        assert!(out.contains("output truncated"), "marker missing:\n{out}");
+    }
+
+    #[tokio::test]
+    async fn test_call_self_truncates_large_output() {
+        let tool = LocalShellTool::new(30000);
+        let mut ctx = ToolContext::for_test();
+        ctx.max_output_chars = Some(200);
+        let result = tool
+            .call(&json!({"command": "seq 1 1000"}), &ctx)
+            .await
+            .unwrap();
+        let text = content_text(&result);
+        let n = text.chars().count();
+        assert!(n <= 200, "output exceeds budget: {n}");
+        assert!(text.contains("output truncated"), "marker missing:\n{text}");
+        assert!(text.starts_with('1'), "head missing:\n{text}");
+        assert!(text.trim_end().ends_with("1000"), "tail missing:\n{text}");
     }
 }

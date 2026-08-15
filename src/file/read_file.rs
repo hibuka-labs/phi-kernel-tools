@@ -65,7 +65,7 @@ impl Tool for ReadFileTool {
         }
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
+    async fn call(&self, args: &Value, ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let path_str = args
             .get("path")
             .and_then(Value::as_str)
@@ -129,27 +129,63 @@ impl Tool for ReadFileTool {
         let end = (start + limit).min(total_lines);
         let selected = &all_lines[start..end];
 
-        // Format output with line numbers
-        let mut output = String::new();
-        output.push_str(&format!(
-            "File: {} (lines {}-{} of {})\n",
-            path_str,
-            if total_lines == 0 { 0 } else { start + 1 },
-            end,
-            total_lines
-        ));
+        // Build the numbered body, self-truncating to the per-call output
+        // budget (`ToolContext::max_output_chars`) so the engine's hard reject
+        // (§6.5) never fires for a paginated read. We keep whole lines and
+        // append a continuation hint naming the next `offset` to resume from.
+        let mut body = String::new();
+        let mut emitted = 0usize;
+        let mut truncated = false;
 
         if selected.is_empty() {
-            output.push_str("(file is empty)");
+            body.push_str("(file is empty)");
         } else {
+            // Conservative upper bound on the final header length: the real end
+            // line is <= `end`, so this over-estimates by at most a few digits.
+            let header_reserve = format!(
+                "File: {} (lines {}-{} of {})",
+                path_str, start + 1, end, total_lines
+            )
+            .len()
+                + 1; // newline between header and body
+
+            let mut used = 0usize;
             for (i, line) in selected.iter().enumerate() {
                 let line_num = start + i + 1;
-                output.push_str(&format!("{:>6}|{}\n", line_num, line));
+                let line_str = format!("{:>6}|{}\n", line_num, line);
+                let line_chars = line_str.chars().count();
+
+                if let Some(max_chars) = ctx.max_output_chars {
+                    let marker = format!("...(truncated, use offset={} to continue)", start + i);
+                    let reserve = header_reserve + marker.chars().count() + 1; // marker + newline
+                    if used + line_chars + reserve > max_chars {
+                        truncated = true;
+                        break;
+                    }
+                }
+
+                body.push_str(&line_str);
+                used += line_chars;
+                emitted += 1;
             }
         }
 
+        if truncated {
+            body.push_str(&format!(
+                "...(truncated, use offset={} to continue)\n",
+                start + emitted
+            ));
+        }
+
+        let start_line = if total_lines == 0 { 0 } else { start + 1 };
+        let end_line = start + emitted;
+        let mut output = format!(
+            "File: {} (lines {start_line}-{end_line} of {total_lines})\n{body}",
+            path_str,
+        );
+
         // Remove trailing newline
-        if output.ends_with('\n') {
+        while output.ends_with('\n') {
             output.pop();
         }
 
@@ -313,5 +349,58 @@ mod tests {
         assert_eq!(meta.name, "read_file");
         assert_eq!(meta.origin, "phi-kernel-tools");
         assert!(!meta.description.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_read_file_self_truncates_to_budget() {
+        let (dir, tool) = setup_temp_workspace();
+        let content = (1..=500)
+            .map(|i| format!("line {i:03} with enough padding to exceed the char budget\n"))
+            .collect::<String>();
+        std::fs::write(dir.path().join("big.txt"), content).unwrap();
+
+        let mut ctx = dummy_ctx();
+        ctx.max_output_chars = Some(400);
+
+        let result = tool.call(&json!({"path": "big.txt"}), &ctx).await.unwrap();
+        let text = content_text(&result);
+
+        assert!(text.chars().count() <= 400, "output exceeds budget: {}", text.chars().count());
+        assert!(text.contains("(truncated, use offset="), "missing continuation hint:\n{text}");
+        assert!(text.contains("line 001"), "should include the first line:\n{text}");
+        assert!(!text.contains("line 500"), "should not include the last line:\n{text}");
+    }
+
+    #[tokio::test]
+    async fn test_read_file_truncation_offset_resumes() {
+        let (dir, tool) = setup_temp_workspace();
+        let content = (1..=200).map(|i| format!("L{i}\n")).collect::<String>();
+        std::fs::write(dir.path().join("big.txt"), content).unwrap();
+
+        let mut ctx = dummy_ctx();
+        ctx.max_output_chars = Some(200);
+
+        let first = tool.call(&json!({"path": "big.txt"}), &ctx).await.unwrap();
+        let first_text = content_text(&first);
+        let offset: usize = first_text
+            .split("offset=")
+            .nth(1)
+            .and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.parse().ok())
+            .expect("marker should carry a numeric offset");
+
+        let second = tool
+            .call(&json!({"path": "big.txt", "offset": offset}), &ctx)
+            .await
+            .unwrap();
+        let second_text = content_text(&second);
+
+        // Continuation's first line is 0-based index `offset`, i.e. 1-based line
+        // `offset + 1`, whose content is `L{offset+1}`.
+        assert!(
+            second_text.contains(&format!("L{}", offset + 1)),
+            "continuation should resume at L{0}:\n{second_text}",
+            offset + 1
+        );
     }
 }
