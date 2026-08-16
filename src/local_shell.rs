@@ -4,6 +4,7 @@ use std::time::Duration;
 use agent_base::{AgentResult, Content, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::io::AsyncBufReadExt;
 
 /// Local shell command execution tool.
 ///
@@ -157,14 +158,24 @@ impl Tool for LocalShellTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null())
-            .kill_on_drop(true);
+            // Group cleanup is owned by `ProcessGroupGuard` (below), which kills
+            // the whole tree — not just the direct child — even when the engine
+            // drops this future on cancel.
+            .kill_on_drop(false);
+
+        // Run in its own process group so a timeout/cancel kills the whole tree
+        // (e.g. `mvn spring-boot:run` → `java`), not just the `sh` wrapper —
+        // otherwise the grandchild survives as an orphan server. With pgroup 0,
+        // the child's pid doubles as its process-group id, so `kill -9 -<pid>`
+        // reaches every descendant.
+        #[cfg(unix)]
+        cmd.process_group(0);
 
         if let Some(dir) = working_dir {
             cmd.current_dir(dir);
         }
 
-        // spawn + timeout + kill pattern: explicitly kill child process on timeout
-        let child = match cmd.spawn() {
+        let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!(error = %e, command = %command, "execute_command: spawn failed");
@@ -175,59 +186,173 @@ impl Tool for LocalShellTool {
             }
         };
 
+        // Under unix `process_group(0)` this is also the process-group id.
         let pid = child.id();
+
+        // Take the pipes before moving `child` into the guard, so the reader
+        // tasks can stream independently of it.
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        // Owns the child so a dropped future (engine cancel / Ctrl+C) still kills
+        // the whole process group — `kill_on_drop` alone would orphan descendants.
+        let mut guard = ProcessGroupGuard {
+            pgid: pid,
+            child,
+            done: false,
+        };
+
+        // Stream stdout/stderr line-by-line via reader tasks, so the caller sees
+        // live progress instead of a frozen screen for the whole duration. Lines
+        // are tagged (stderr vs stdout) and reassembled below.
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
+
+        if let Some(stdout) = stdout {
+            let tx = line_tx.clone();
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if tx.send((false, line)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        if let Some(stderr) = stderr {
+            let tx = line_tx;
+            tokio::spawn(async move {
+                let mut lines = tokio::io::BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if tx.send((true, line)).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+
+        let mut stdout_buf = String::new();
+        let mut stderr_buf = String::new();
         let sleep = tokio::time::sleep(Duration::from_millis(self.timeout_ms));
         tokio::pin!(sleep);
 
-        let output = tokio::select! {
-            result = child.wait_with_output() => {
-                match result {
-                    Ok(output) => {
-                        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                        let exit_code = output.status.code();
-
-                        tracing::info!(
-                            command = %command,
-                            exit_code = exit_code,
-                            stdout_len = stdout.len(),
-                            stderr_len = stderr.len(),
-                            "execute_command: done"
-                        );
-
-                        let summary = format_result(&command, &stdout, &stderr, exit_code, false);
-                        let summary = truncate_output(&summary, ctx.max_output_chars);
-                        Ok(vec![Content::text(summary)])
+        // Drive the command: drain streamed lines until both reader tasks finish
+        // (the channel closes, which also implies the process exited and closed
+        // its pipes), or bail on timeout/cancel. `child.wait()` is reaped after
+        // the loop for the exit code.
+        loop {
+            tokio::select! {
+                line = line_rx.recv() => {
+                    match line {
+                        Some((is_stderr, line)) => {
+                            // Live feedback; the final summary is assembled below.
+                            ctx.emit_progress(&line);
+                            if is_stderr {
+                                stderr_buf.push_str(&line);
+                                stderr_buf.push('\n');
+                            } else {
+                                stdout_buf.push_str(&line);
+                                stdout_buf.push('\n');
+                            }
+                        }
+                        // Both reader tasks finished → all output drained and the
+                        // process exited. Reap the exit code after the loop.
+                        None => break,
                     }
-                    Err(e) => {
-                        tracing::error!(error = %e, command = %command, "execute_command: wait failed");
-                        Ok(vec![Content::text(format!(
-                            "[Error]: Command execution failed: {}",
-                            e
-                        ))])
-                    }
+                }
+                _ = &mut sleep => {
+                    kill_process_group(pid);
+                    tracing::warn!(command = %command, timeout_ms = self.timeout_ms, "execute_command: timed out, killed process group");
+                    return Ok(vec![Content::text(format!(
+                        "[Command Timed Out after {}ms]\ncommand: {}",
+                        self.timeout_ms, command
+                    ))]);
+                }
+                _ = ctx.cancel_token.cancelled() => {
+                    kill_process_group(pid);
+                    tracing::info!(command = %command, "execute_command: cancelled, killed process group");
+                    return Ok(vec![Content::text(format!(
+                        "[Command Terminated]\ncommand: {}",
+                        command
+                    ))]);
                 }
             }
-            _ = &mut sleep => {
-                // Timeout — kill the child process by pid (child has been moved by wait_with_output)
-                if let Some(pid) = pid {
-                    let _ = tokio::process::Command::new("kill")
-                        .arg("-9")
-                        .arg(pid.to_string())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .status()
-                        .await;
-                }
-                tracing::warn!(command = %command, timeout_ms = self.timeout_ms, "execute_command: timed out and killed");
-                Ok(vec![Content::text(format!(
-                    "[Command Timed Out after {}ms]\ncommand: {}",
-                    self.timeout_ms, command
-                ))])
+        }
+
+        // Reap the child for its exit code (it already exited — its pipes closed,
+        // which is what ended the loop).
+        let exit_code = match guard.child.wait().await {
+            Ok(status) => status.code(),
+            Err(e) => {
+                tracing::error!(error = %e, command = %command, "execute_command: wait failed");
+                return Ok(vec![Content::text(format!(
+                    "[Error]: Command execution failed: {}",
+                    e
+                ))]);
             }
         };
+        // Reaped successfully → the guard must not kill anything on drop.
+        guard.done = true;
 
-        output
+        tracing::info!(
+            command = %command,
+            exit_code = exit_code,
+            stdout_len = stdout_buf.len(),
+            stderr_len = stderr_buf.len(),
+            "execute_command: done"
+        );
+
+        let summary = format_result(&command, &stdout_buf, &stderr_buf, exit_code, false);
+        let summary = truncate_output(&summary, ctx.max_output_chars);
+        Ok(vec![Content::text(summary)])
+    }
+}
+
+/// Kill the spawned command's process group on timeout/cancel, so children-of-
+/// children (e.g. a `java` server launched by `mvn spring-boot:run`) don't leak
+/// as orphans once the direct child is gone. Uses `kill -9 -<pgid>` to reach the
+/// whole tree.
+#[cfg(unix)]
+fn kill_process_group(pgid: Option<u32>) {
+    let Some(pgid) = pgid else { return };
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(format!("-{pgid}"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Non-unix fallback: kill only the direct child (no process-group support).
+#[cfg(not(unix))]
+fn kill_process_group(pid: Option<u32>) {
+    let Some(pid) = pid else { return };
+    let _ = std::process::Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// RAII guard over a spawned child that owns process-group cleanup.
+///
+/// The engine drives a tool's future with `tokio::select!` and, on cancel, drops
+/// it — so a kill inside `call()`'s own `select!` isn't guaranteed to run. This
+/// guard runs its group-kill from `Drop` instead, guaranteeing an abandoned
+/// command's whole tree is reaped no matter how the future ends (normal, timeout,
+/// cancel, or panic). `done` flips to `true` after the child is reaped so a clean
+/// completion doesn't kill anything.
+struct ProcessGroupGuard {
+    pgid: Option<u32>,
+    child: tokio::process::Child,
+    done: bool,
+}
+
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if !self.done {
+            kill_process_group(self.pgid);
+        }
     }
 }
 
@@ -360,6 +485,50 @@ mod tests {
             .await
             .unwrap();
         assert!(content_text(&result).contains("Timed Out"));
+    }
+
+    /// A timeout must kill the whole process tree, not just the direct `sh`
+    /// child — otherwise a grandchild (e.g. a `java` server launched by `mvn`)
+    /// leaks as an orphan. Here `sleep` is the grandchild: `sh` backgrounds it
+    /// and `wait`s, so on timeout both must die.
+    #[tokio::test]
+    async fn test_call_timeout_kills_descendants() {
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("child.pid");
+        let pidpath = pidfile.to_str().unwrap().to_string();
+
+        // Background a long-lived `sleep` (grandchild), record its pid, then
+        // `wait` so the direct child stays alive alongside it.
+        let command = format!("sleep 60 & echo $! > '{pidpath}'; wait");
+        let tool = LocalShellTool::new(300);
+        let result = tool
+            .call(&json!({"command": command}), &ToolContext::for_test())
+            .await
+            .unwrap();
+        assert!(content_text(&result).contains("Timed Out"));
+
+        // The grandchild's pid was recorded before the timeout; after the group
+        // kill it must be gone. Poll briefly — SIGKILL is async to the reporter.
+        let pid: u32 = std::fs::read_to_string(&pidfile)
+            .expect("grandchild pidfile should be written")
+            .trim()
+            .parse()
+            .expect("pidfile should contain a pid");
+
+        let mut alive = true;
+        for _ in 0..50 {
+            alive = std::process::Command::new("kill")
+                .arg("-0")
+                .arg(pid.to_string())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !alive {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!alive, "grandchild pid {pid} survived the timeout kill");
     }
 
     #[test]
