@@ -9,11 +9,10 @@ use super::resolve_path;
 /// Maximum file size for writes (1 MB).
 const MAX_FILE_SIZE: usize = 1_048_576;
 
-/// Writes or creates a file in the workspace.
+/// Writes or creates a file.
 ///
-/// Paths are resolved relative to the workspace root. Path traversal (`..`) is
-/// detected and rejected. By default, existing files are not overwritten unless
-/// `overwrite: true` is set.
+/// Paths may be workspace-relative or absolute (no sandbox). By default,
+/// existing files are not overwritten unless `overwrite: true` is set.
 pub struct WriteFileTool {
     workspace_root: PathBuf,
 }
@@ -31,7 +30,7 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Write or create a file in the workspace. Creates parent directories automatically. Will not overwrite existing files unless 'overwrite' is set to true. Content size is limited to 1 MB. Use this to create or update source files, configuration, documentation, or any text file."
+        "Write or create a file. Creates parent directories automatically. Will not overwrite existing files unless 'overwrite' is set to true. Content size is limited to 1 MB. The path may be workspace-relative or absolute. Use this to create or update source files, configuration, documentation, or any text file."
     }
 
     fn schema(&self) -> Value {
@@ -40,7 +39,7 @@ impl Tool for WriteFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file, relative to the workspace root. E.g. 'src/main.rs', 'config.toml'. Parent directories will be created if needed."
+                    "description": "Path to the file: workspace-relative (e.g. 'src/main.rs') or absolute. Parent directories will be created if needed."
                 },
                 "content": {
                     "type": "string",
@@ -58,7 +57,7 @@ impl Tool for WriteFileTool {
     fn metadata(&self) -> agent_base::ToolMetadata {
         agent_base::ToolMetadata {
             name: self.name().to_string(),
-            description: "Write or create a file in the workspace, with path sandboxing and overwrite protection."
+            description: "Write or create a file (workspace-relative or absolute) with overwrite protection."
                 .to_string(),
             origin: "phi-kernel-tools".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -288,18 +287,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_path_traversal_rejected() {
+    async fn test_write_file_absolute_path_outside_workspace() {
         let (_dir, tool) = setup_temp_workspace();
+        // No sandbox: an absolute path outside the workspace is writable.
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("outside.txt");
 
         let result = tool
             .call(
-                &json!({"path": "../outside.txt", "content": "evil"}),
+                &json!({"path": target.to_str().unwrap(), "content": "external"}),
                 &dummy_ctx(),
             )
             .await
             .unwrap();
 
-        assert!(content_text(&result).contains("Error"));
+        assert!(content_text(&result).contains("Created"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "external");
     }
 
     #[tokio::test]

@@ -9,10 +9,10 @@ use super::resolve_path;
 /// Maximum number of lines returned by default.
 const DEFAULT_LIMIT: usize = 2000;
 
-/// Reads a file from the workspace, with optional offset and limit for pagination.
+/// Reads a file, with optional offset and limit for pagination.
 ///
-/// Paths are resolved relative to the workspace root. Path traversal (`..`) is
-/// detected and rejected.
+/// Paths may be workspace-relative or absolute, and may escape the workspace via
+/// `..` (no sandbox). Safety is the approval layer.
 pub struct ReadFileTool {
     workspace_root: PathBuf,
 }
@@ -30,7 +30,7 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a file from the workspace. Returns the file content with line numbers. Supports pagination with offset and limit parameters. Use this to read source code, configuration files, documentation, or any text file."
+        "Read a file. Returns the file content with line numbers. Supports pagination with offset and limit parameters. The path may be workspace-relative or absolute (e.g. a file in another project). Use this to read source code, configuration files, documentation, or any text file."
     }
 
     fn schema(&self) -> Value {
@@ -39,7 +39,7 @@ impl Tool for ReadFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file, relative to the workspace root. E.g. 'src/main.rs', 'docs/README.md'."
+                    "description": "Path to the file: workspace-relative (e.g. 'src/main.rs') or absolute (e.g. '/abs/path/file.rs')."
                 },
                 "offset": {
                     "type": "integer",
@@ -57,7 +57,7 @@ impl Tool for ReadFileTool {
     fn metadata(&self) -> agent_base::ToolMetadata {
         agent_base::ToolMetadata {
             name: self.name().to_string(),
-            description: "Read a file from the workspace with line numbers and pagination support."
+            description: "Read a file (workspace-relative or absolute) with line numbers and pagination support."
                 .to_string(),
             origin: "phi-kernel-tools".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -305,15 +305,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_path_traversal_rejected() {
+    async fn test_read_file_absolute_path_outside_workspace() {
         let (_dir, tool) = setup_temp_workspace();
+        // No sandbox: an absolute path outside the workspace is readable.
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("outside.txt"), "secret\n").unwrap();
 
         let result = tool
-            .call(&json!({"path": "../etc/passwd"}), &dummy_ctx())
+            .call(
+                &json!({"path": outside.path().join("outside.txt").to_str().unwrap()}),
+                &dummy_ctx(),
+            )
             .await
             .unwrap();
 
-        assert!(content_text(&result).contains("Error"));
+        assert!(content_text(&result).contains("secret"));
     }
 
     #[tokio::test]

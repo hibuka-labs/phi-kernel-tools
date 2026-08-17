@@ -1,8 +1,10 @@
 //! File system kernel tools.
 //!
-//! Tools that give the LLM the ability to read, write, and list files
-//! in a workspace-root-sandboxed manner. These are the foundation for
-//! Skills and Memory prompt-injection mode.
+//! Tools that give the LLM the ability to read, write, and list files. Paths
+//! may be workspace-relative or absolute, and may escape the workspace via
+//! `..` — there is no path sandbox. Safety comes from the approval layer
+//! (`auto`/`ask`/`deny`), matching Claude Code's model. These tools are the
+//! foundation for Skills and Memory prompt-injection mode.
 
 mod edit_file;
 mod list_files;
@@ -16,78 +18,33 @@ pub use write_file::WriteFileTool;
 
 use std::path::{Path, PathBuf};
 
-/// Resolve a user-supplied path relative to the workspace root.
+/// Resolve a user-supplied path to an absolute [`PathBuf`].
 ///
-/// Returns the absolute path if it stays within the workspace root.
-/// Returns an error string for path traversal attempts or resolution failures.
+/// There is no workspace sandbox: absolute paths are used as-is, relative paths
+/// (including `..`) join the workspace root, and existing paths are canonicalized
+/// so `.`/`..`/symlinks resolve deterministically. Non-existent paths are left
+/// joined (the write tools create them). Safety is the *approval layer*
+/// (`auto`/`ask`/`deny`), not path boundaries — matching Claude Code's model.
 fn resolve_path(workspace_root: &Path, user_path: &str) -> Result<PathBuf, String> {
     let trimmed = user_path.trim();
     if trimmed.is_empty() {
         return Err("Empty path provided.".to_string());
     }
 
-    // Check the user-supplied path for traversal by analyzing its own components.
-    // We do this BEFORE joining with workspace root so we can detect:
-    // - absolute paths (starts with /)
-    // - parent-dir traversal (.. that goes above the root)
-    resolve_user_components(trimmed)?;
+    let p = Path::new(trimmed);
+    let resolved = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        workspace_root.join(p)
+    };
 
-    // Join with workspace root — safe after component check
-    let resolved = workspace_root.join(trimmed);
-
-    // If the path already exists, verify it's within workspace root via canonicalization
     if resolved.exists() {
-        let canonical = resolved
+        resolved
             .canonicalize()
-            .map_err(|e| format!("Failed to resolve path '{}': {}", trimmed, e))?;
-        let root_canonical = workspace_root
-            .canonicalize()
-            .map_err(|e| format!("Failed to resolve workspace root: {}", e))?;
-        if !canonical.starts_with(&root_canonical) {
-            return Err(format!(
-                "Path traversal detected: '{}' resolves outside the workspace root.",
-                trimmed
-            ));
-        }
-        return Ok(canonical);
+            .map_err(|e| format!("Failed to resolve path '{}': {}", trimmed, e))
+    } else {
+        Ok(resolved)
     }
-
-    // For non-existent paths, the component check above is sufficient
-    Ok(resolved)
-}
-
-/// Check user-provided path components for traversal and absolute paths.
-fn resolve_user_components(user_path: &str) -> Result<(), String> {
-    let path = Path::new(user_path);
-    let mut depth: i32 = 0;
-
-    for component in path.components() {
-        match component {
-            std::path::Component::ParentDir => {
-                depth -= 1;
-                if depth < 0 {
-                    return Err(format!(
-                        "Path traversal detected: '{}' escapes the workspace root.",
-                        user_path
-                    ));
-                }
-            }
-            std::path::Component::CurDir => {
-                // `.` doesn't change depth
-            }
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                return Err(format!(
-                    "Absolute paths are not allowed: '{}'. Use a relative path.",
-                    user_path
-                ));
-            }
-            std::path::Component::Normal(_) => {
-                depth += 1;
-            }
-        }
-    }
-
-    Ok(())
 }
 
 /// Simple glob pattern matching for file names.
@@ -194,24 +151,28 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_path_traversal_rejected() {
+    fn test_resolve_path_parent_escapes_root() {
         let (_dir, root) = setup_root();
-        let err = resolve_path(&root, "../etc/passwd").unwrap_err();
-        assert!(err.contains("traversal") || err.contains("escapes"));
+        // `..` is allowed — no sandbox. The resolved path is outside the root.
+        let result = resolve_path(&root, "../outside.txt").unwrap();
+        assert!(result.ends_with("outside.txt"), "got {result:?}");
     }
 
     #[test]
-    fn test_resolve_path_deep_traversal_rejected() {
+    fn test_resolve_path_deep_traversal_allowed() {
         let (_dir, root) = setup_root();
-        let err = resolve_path(&root, "foo/../../etc/passwd").unwrap_err();
-        assert!(err.contains("traversal") || err.contains("escapes"));
+        let result = resolve_path(&root, "foo/../../bar.txt").unwrap();
+        assert!(result.ends_with("bar.txt"), "got {result:?}");
     }
 
     #[test]
-    fn test_resolve_path_absolute_rejected() {
+    fn test_resolve_path_absolute_allowed() {
         let (_dir, root) = setup_root();
-        let err = resolve_path(&root, "/etc/passwd").unwrap_err();
-        assert!(err.contains("Absolute") || err.contains("relative"));
+        // An absolute path (here, the root's own canonical form) is accepted.
+        let abs = root.canonicalize().unwrap();
+        let result = resolve_path(&root, abs.to_str().unwrap()).unwrap();
+        assert!(result.is_absolute());
+        assert_eq!(result, abs);
     }
 
     #[test]

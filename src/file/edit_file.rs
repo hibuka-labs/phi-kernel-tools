@@ -63,7 +63,7 @@ impl Tool for EditFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to edit, relative to the workspace root."
+                    "description": "Path to the file to edit: workspace-relative or absolute."
                 },
                 "edits": {
                     "type": "array",
@@ -92,7 +92,7 @@ impl Tool for EditFileTool {
         agent_base::ToolMetadata {
             name: self.name().to_string(),
             description:
-                "Precision text replacement in workspace files with uniqueness checks and atomic writes."
+                "Precision text replacement (workspace-relative or absolute paths) with uniqueness checks and atomic writes."
                     .to_string(),
             origin: "phi-kernel-tools".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -959,19 +959,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_edit_file_path_traversal_rejected() {
+    async fn test_edit_file_absolute_path_outside_workspace() {
         let (_dir, tool) = setup_temp_workspace();
+        // No sandbox: an absolute path outside the workspace is editable.
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("outside.txt");
+        std::fs::write(&target, "hello world\n").unwrap();
+
         let result = tool
             .call(
                 &json!({
-                    "path": "../outside.txt",
-                    "edits": [{"old_text": "x", "new_text": "y"}]
+                    "path": target.to_str().unwrap(),
+                    "edits": [{"old_text": "hello", "new_text": "hi"}]
                 }),
                 &dummy_ctx(),
             )
             .await
             .unwrap();
-        assert!(content_text(&result).contains("Error"));
+
+        assert!(content_text(&result).contains("Successfully applied 1 edit"));
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "hi world\n");
     }
 
     #[tokio::test]

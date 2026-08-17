@@ -20,11 +20,10 @@ const DEFAULT_LIMIT: usize = 500;
 /// recursive listing with thousands of object/ref files.
 const VCS_DIRS: &[&str] = &[".git", ".hg", ".svn"];
 
-/// Lists files and directories in the workspace, with optional glob pattern
-/// filtering and recursive mode.
+/// Lists files and directories, with optional glob pattern filtering and
+/// recursive mode.
 ///
-/// Paths are resolved relative to the workspace root. Path traversal (`..`) is
-/// detected and rejected.
+/// Paths may be workspace-relative or absolute (no sandbox).
 pub struct ListFilesTool {
     workspace_root: PathBuf,
     /// Entry names (files or directories) to skip. Empty by default — the
@@ -55,7 +54,7 @@ impl Tool for ListFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "List files and directories in a workspace directory. Supports glob pattern filtering (e.g. '*.rs'), optional recursive mode (which respects .gitignore), and a limit on the number of entries returned. Use this to explore project structure, find files by pattern, or understand directory layout."
+        "List files and directories in a directory. Supports glob pattern filtering (e.g. '*.rs'), optional recursive mode (which respects .gitignore), and a limit on the number of entries returned. The path may be workspace-relative or absolute. Use this to explore project structure, find files by pattern, or understand directory layout."
     }
 
     fn schema(&self) -> Value {
@@ -64,7 +63,7 @@ impl Tool for ListFilesTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Directory path, relative to the workspace root. Default: '.' (workspace root)."
+                    "description": "Directory path: workspace-relative or absolute. Default: '.' (workspace root)."
                 },
                 "pattern": {
                     "type": "string",
@@ -85,7 +84,7 @@ impl Tool for ListFilesTool {
     fn metadata(&self) -> agent_base::ToolMetadata {
         agent_base::ToolMetadata {
             name: self.name().to_string(),
-            description: "List files and directories in the workspace with glob filtering and recursive support."
+            description: "List files and directories (workspace-relative or absolute) with glob filtering and recursive support."
                 .to_string(),
             origin: "phi-kernel-tools".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
