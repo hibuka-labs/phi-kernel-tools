@@ -309,17 +309,25 @@ impl Tool for LocalShellTool {
 
 /// Kill the spawned command's process group on timeout/cancel, so children-of-
 /// children (e.g. a `java` server launched by `mvn spring-boot:run`) don't leak
-/// as orphans once the direct child is gone. Uses `kill -9 -<pgid>` to reach the
-/// whole tree.
+/// as orphans once the direct child is gone. `process_group(0)` made the child a
+/// group leader (pgid == its pid), so a negative `kill` reaches every descendant.
+///
+/// The libc syscall is used directly rather than the external `kill` binary:
+/// procps' `/usr/bin/kill` on some Linux builds silently fails (returns 0 but
+/// signals nothing) for process groups created in the *same session* via
+/// `setpgid`, which made the timeout kill a no-op on CI and leaked whole process
+/// trees. The raw syscall — the same one the shell builtin uses — has no such
+/// argv-parsing surface and works in every environment tested.
 #[cfg(unix)]
 fn kill_process_group(pgid: Option<u32>) {
     let Some(pgid) = pgid else { return };
-    let _ = std::process::Command::new("kill")
-        .arg("-9")
-        .arg(format!("-{pgid}"))
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+    // SAFETY: `pgid` is the pid of the process the tool spawned and is still
+    // running (only reached on timeout/cancel before reap). A negative pid
+    // targets the whole group. Returns -1 for ESRCH after a successful kill,
+    // which is fine.
+    unsafe {
+        libc::kill(-(pgid as i32), libc::SIGKILL);
+    }
 }
 
 /// Non-unix fallback: kill only the direct child (no process-group support).
@@ -508,7 +516,9 @@ mod tests {
         assert!(content_text(&result).contains("Timed Out"));
 
         // The grandchild's pid was recorded before the timeout; after the group
-        // kill it must be gone. Poll briefly — SIGKILL is async to the reporter.
+        // kill it must be gone. Poll — SIGKILL is async to the reporter, and a
+        // loaded CI runner can delay the death observation, so allow a generous
+        // 5s window (250 × 20ms) instead of a tight 1s poll.
         let pid: u32 = std::fs::read_to_string(&pidfile)
             .expect("grandchild pidfile should be written")
             .trim()
@@ -516,7 +526,7 @@ mod tests {
             .expect("pidfile should contain a pid");
 
         let mut alive = true;
-        for _ in 0..50 {
+        for _ in 0..250 {
             alive = std::process::Command::new("kill")
                 .arg("-0")
                 .arg(pid.to_string())
