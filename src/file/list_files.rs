@@ -145,9 +145,21 @@ impl Tool for ListFilesTool {
         let mut entries: Vec<FileEntry> = Vec::new();
 
         let limit_reached = if recursive {
-            collect_entries_recursive(&dir_path, &mut entries, pattern.as_deref(), &self.excludes, limit)?
+            collect_entries_recursive(
+                &dir_path,
+                &mut entries,
+                pattern.as_deref(),
+                &self.excludes,
+                limit,
+            )?
         } else {
-            collect_entries(&dir_path, &mut entries, pattern.as_deref(), &self.excludes, limit)?
+            collect_entries(
+                &dir_path,
+                &mut entries,
+                pattern.as_deref(),
+                &self.excludes,
+                limit,
+            )?
         };
 
         // Sort: directories first, then files, alphabetically within each group
@@ -203,7 +215,8 @@ impl Tool for ListFilesTool {
             // read_file there is no natural "offset" to resume from, so the hint just
             // tells the agent to narrow `path`/`pattern` and re-list.
             if let Some(max_chars) = ctx.max_output_chars
-                && summary.chars().count() + line.chars().count() + marker.chars().count() > max_chars
+                && summary.chars().count() + line.chars().count() + marker.chars().count()
+                    > max_chars
             {
                 truncated = true;
                 break;
@@ -593,10 +606,8 @@ mod tests {
         std::fs::write(dir.path().join("src/main.rs"), "main").unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "toml").unwrap();
 
-        let tool = ListFilesTool::with_excludes(
-            dir.path().to_path_buf(),
-            vec!["target".to_string()],
-        );
+        let tool =
+            ListFilesTool::with_excludes(dir.path().to_path_buf(), vec!["target".to_string()]);
 
         let result = tool
             .call(&json!({"path": ".", "recursive": true}), &dummy_ctx())
@@ -635,7 +646,10 @@ mod tests {
             "output exceeds budget: {}",
             text.chars().count()
         );
-        assert!(text.contains("...(truncated)"), "missing truncation hint:\n{text}");
+        assert!(
+            text.contains("...(truncated)"),
+            "missing truncation hint:\n{text}"
+        );
     }
 
     #[test]
@@ -664,7 +678,10 @@ mod tests {
         let text = content_text(&result);
 
         assert!(text.contains("keep.rs"), "{text}");
-        assert!(!text.contains("skipme"), "gitignored dir leaked through:\n{text}");
+        assert!(
+            !text.contains("skipme"),
+            "gitignored dir leaked through:\n{text}"
+        );
     }
 
     #[tokio::test]

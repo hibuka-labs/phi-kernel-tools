@@ -57,8 +57,9 @@ impl Tool for WriteFileTool {
     fn metadata(&self) -> agent_base::ToolMetadata {
         agent_base::ToolMetadata {
             name: self.name().to_string(),
-            description: "Write or create a file (workspace-relative or absolute) with overwrite protection."
-                .to_string(),
+            description:
+                "Write or create a file (workspace-relative or absolute) with overwrite protection."
+                    .to_string(),
             origin: "phi-kernel-tools".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],

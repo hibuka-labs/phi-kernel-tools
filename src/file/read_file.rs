@@ -144,7 +144,10 @@ impl Tool for ReadFileTool {
             // line is <= `end`, so this over-estimates by at most a few digits.
             let header_reserve = format!(
                 "File: {} (lines {}-{} of {})",
-                path_str, start + 1, end, total_lines
+                path_str,
+                start + 1,
+                end,
+                total_lines
             )
             .len()
                 + 1; // newline between header and body
@@ -371,10 +374,23 @@ mod tests {
         let result = tool.call(&json!({"path": "big.txt"}), &ctx).await.unwrap();
         let text = content_text(&result);
 
-        assert!(text.chars().count() <= 400, "output exceeds budget: {}", text.chars().count());
-        assert!(text.contains("(truncated, use offset="), "missing continuation hint:\n{text}");
-        assert!(text.contains("line 001"), "should include the first line:\n{text}");
-        assert!(!text.contains("line 500"), "should not include the last line:\n{text}");
+        assert!(
+            text.chars().count() <= 400,
+            "output exceeds budget: {}",
+            text.chars().count()
+        );
+        assert!(
+            text.contains("(truncated, use offset="),
+            "missing continuation hint:\n{text}"
+        );
+        assert!(
+            text.contains("line 001"),
+            "should include the first line:\n{text}"
+        );
+        assert!(
+            !text.contains("line 500"),
+            "should not include the last line:\n{text}"
+        );
     }
 
     #[tokio::test]
