@@ -3,6 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/phi-kernel-tools.svg)](https://crates.io/crates/phi-kernel-tools)
 [![Documentation](https://docs.rs/phi-kernel-tools/badge.svg)](https://docs.rs/phi-kernel-tools)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![codecov](https://codecov.io/gh/hibuka-labs/phi-kernel-tools/branch/master/graph/badge.svg)](https://codecov.io/gh/hibuka-labs/phi-kernel-tools)
 
 **Kernel tools for phi-agent — LLM-callable Tool implementations injected via factory pattern.**
 
