@@ -19,9 +19,7 @@ pub struct ReadFileTool {
 
 impl ReadFileTool {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self {
-            workspace_root,
-        }
+        Self { workspace_root }
     }
 }
 
@@ -239,14 +237,20 @@ mod tests {
     #[tokio::test]
     async fn read_file_returns_content() {
         let tool = ReadFileTool::new(crate_root());
-        let result = tool.call(&json!({"path": "Cargo.toml"}), &ctx()).await.unwrap();
+        let result = tool
+            .call(&json!({"path": "Cargo.toml"}), &ctx())
+            .await
+            .unwrap();
         assert!(text(&result).contains("phi-kernel-tools"));
     }
 
     #[tokio::test]
     async fn read_file_not_found() {
         let tool = ReadFileTool::new(crate_root());
-        let result = tool.call(&json!({"path": "nonexistent.txt"}), &ctx()).await.unwrap();
+        let result = tool
+            .call(&json!({"path": "nonexistent.txt"}), &ctx())
+            .await
+            .unwrap();
         assert!(text(&result).contains("[Error]"));
     }
 }

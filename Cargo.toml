@@ -16,8 +16,8 @@ multi-agent = []
 shell = []
 
 [dependencies]
-agent-base = { version = "0.3.0" }
-agent-works = { version = "0.4.0" }
+agent-base = { version = "0.3.1" }
+agent-works = { version = "0.4.1", features = ["multi_agent"] }
 async-trait = "0.1"
 ignore = "0.4"
 libc = "0.2"
