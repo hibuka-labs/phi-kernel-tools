@@ -1,6 +1,6 @@
 [package]
 name = "phi-kernel-tools"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Kernel tools for phi-agent — file system, multi-agent, and shell tools"
 license = "MIT"
