@@ -5,7 +5,52 @@ use async_trait::async_trait;
 use ignore::WalkBuilder;
 use serde_json::{Value, json};
 
-use super::{glob_match, resolve_path};
+use super::resolve_path;
+
+// ── Glob matching (module-local) ─────────────────────────────────────────────
+
+/// Simple glob pattern matching for file names.
+///
+/// Supports:
+/// - `*` — matches any sequence of characters except `/`
+/// - `?` — matches any single character except `/`
+///
+/// All other characters match literally (case-sensitive).
+fn glob_match(pattern: &str, name: &str) -> bool {
+    glob_match_inner(pattern.as_bytes(), name.as_bytes())
+}
+
+fn glob_match_inner(pat: &[u8], name: &[u8]) -> bool {
+    if pat.is_empty() {
+        return name.is_empty();
+    }
+
+    match pat[0] {
+        b'*' => {
+            for i in 0..=name.len() {
+                if i < name.len() && name[i] == b'/' {
+                    break;
+                }
+                if glob_match_inner(&pat[1..], &name[i..]) {
+                    return true;
+                }
+            }
+            false
+        }
+        b'?' => {
+            if name.is_empty() || name[0] == b'/' {
+                return false;
+            }
+            glob_match_inner(&pat[1..], &name[1..])
+        }
+        _ => {
+            if name.is_empty() || pat[0] != name[0] {
+                return false;
+            }
+            glob_match_inner(&pat[1..], &name[1..])
+        }
+    }
+}
 
 /// Maximum recursion depth for directory listing.
 const MAX_DEPTH: usize = 64;
