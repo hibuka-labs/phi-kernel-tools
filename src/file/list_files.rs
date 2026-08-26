@@ -17,39 +17,54 @@ use super::resolve_path;
 ///
 /// All other characters match literally (case-sensitive).
 fn glob_match(pattern: &str, name: &str) -> bool {
-    glob_match_inner(pattern.as_bytes(), name.as_bytes())
-}
+    let pat = pattern.as_bytes();
+    let name = name.as_bytes();
+    let m = pat.len();
+    let n = name.len();
 
-fn glob_match_inner(pat: &[u8], name: &[u8]) -> bool {
-    if pat.is_empty() {
-        return name.is_empty();
+    // DP table: dp[i][j] = glob_match_inner(pat[i..], name[j..])
+    // Using 1D rolling array since each row depends only on the next row.
+    let mut dp = vec![false; n + 1];
+    // Base case: empty pattern matches empty name only
+    dp[n] = true;
+
+    // Process pattern right-to-left (skip last byte — handled by base case)
+    for i in (0..m).rev() {
+        let mut new_dp = vec![false; n + 1];
+        match pat[i] {
+            b'*' => {
+                // * matches any sequence except '/'.
+                // dp[i][j] = dp[i+1][j] (match 0) OR dp[i][j+1] (match 1 more)
+                // Process right-to-left so dp[i][j+1] is already computed.
+                for j in (0..=n).rev() {
+                    let skip_slash = j < n && name[j] == b'/';
+                    if skip_slash {
+                        // * cannot match past '/'
+                        new_dp[j] = dp[j]; // match 0 chars
+                    } else {
+                        // match 0 chars (dp[i+1][j]) OR match 1+ chars (new_dp[j+1])
+                        new_dp[j] = dp[j] || (j < n && new_dp[j + 1]);
+                    }
+                }
+            }
+            b'?' => {
+                // ? matches any single char except '/'
+                for j in 0..n {
+                    new_dp[j] = name[j] != b'/' && dp[j + 1];
+                }
+                // j == n: ? can't match empty → new_dp[n] = false (already)
+            }
+            c => {
+                // literal match
+                for j in 0..n {
+                    new_dp[j] = name[j] == c && dp[j + 1];
+                }
+            }
+        }
+        dp = new_dp;
     }
 
-    match pat[0] {
-        b'*' => {
-            for i in 0..=name.len() {
-                if i < name.len() && name[i] == b'/' {
-                    break;
-                }
-                if glob_match_inner(&pat[1..], &name[i..]) {
-                    return true;
-                }
-            }
-            false
-        }
-        b'?' => {
-            if name.is_empty() || name[0] == b'/' {
-                return false;
-            }
-            glob_match_inner(&pat[1..], &name[1..])
-        }
-        _ => {
-            if name.is_empty() || pat[0] != name[0] {
-                return false;
-            }
-            glob_match_inner(&pat[1..], &name[1..])
-        }
-    }
+    dp[0]
 }
 
 /// Maximum recursion depth for directory listing.
@@ -748,5 +763,68 @@ mod tests {
         assert!(text.contains("5 entries limit reached"), "{text}");
         assert!(text.contains("limit=10"), "{text}");
         assert!(text.contains("(5 files, 0 dirs)"), "{text}");
+    }
+
+    #[test]
+    fn glob_match_backtracking_does_not_hang() {
+        // Pattern with alternating *? creates exponential backtracking in naive
+        // recursive implementation when NO match exists (must explore all branches).
+        // Use 'b' suffix so it never matches 'a' input → forces full search.
+        let pattern = "*?*?*?*?*?*?*?*?*?*?b";
+        let name = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; // 40 a's
+
+        let start = std::time::Instant::now();
+        let result = glob_match(pattern, name);
+        let elapsed = start.elapsed();
+
+        eprintln!("glob_match({:?}, {:?}) took {:?}", pattern, name, elapsed);
+
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "glob_match took {:?} — exponential backtracking detected",
+            elapsed,
+        );
+        assert!(!result, "pattern should not match");
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn glob_match_star_matches_everything(name in "[a-z]{0,50}") {
+            // "*" should match any name (without '/')
+            assert!(glob_match("*", &name));
+        }
+
+        #[test]
+        fn glob_match_question_mark_matches_single_char(c in b'a'..=b'z') {
+            let name = String::from_utf8(vec![c]).unwrap();
+            assert!(glob_match("?", &name));
+        }
+
+        #[test]
+        fn glob_match_does_not_panic(pattern in "[*?a-z]{0,30}", name in "[a-z]{0,50}") {
+            let _ = glob_match(&pattern, &name);
+        }
+
+        #[test]
+        fn glob_match_star_prefix_matches_any_suffix(
+            prefix in "[a-z]{1,5}",
+            suffix in "[a-z]{0,20}"
+        ) {
+            let pattern = format!("{}*", prefix);
+            let name = format!("{}{}", prefix, suffix);
+            assert!(glob_match(&pattern, &name));
+        }
+
+        #[test]
+        fn human_size_does_not_panic(bytes in 0..u64::MAX) {
+            let result = human_size(bytes);
+            assert!(!result.is_empty());
+        }
     }
 }

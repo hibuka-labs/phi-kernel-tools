@@ -314,7 +314,7 @@ fn find_all_positions(haystack: &str, needle: &str) -> Vec<usize> {
     while let Some(pos) = haystack[start..].find(needle) {
         let abs_pos = start + pos;
         positions.push(abs_pos);
-        start = abs_pos + 1; // allow overlapping matches
+        start = abs_pos + needle.len();
     }
     positions
 }
@@ -559,6 +559,24 @@ mod tests {
     fn test_find_all_positions_multiple() {
         let pos = find_all_positions("foo bar foo baz foo", "foo");
         assert_eq!(pos, vec![0, 8, 16]);
+    }
+
+    #[test]
+    fn test_find_all_positions_multibyte_needle_no_panic() {
+        // Bug-1: multi-byte UTF-8 needle (é = 2 bytes) causes start to land
+        // mid-codepoint on the next iteration, panicking at "char boundary".
+        // This test MUST pass after the fix.
+        let pos = find_all_positions("aééb", "é");
+        // "aééb" bytes: [0x61, 0xC3, 0xA9, 0xC3, 0xA9, 0x62]
+        //                       ^1       ^3
+        assert_eq!(pos, vec![1, 3]);
+    }
+
+    #[test]
+    fn test_find_all_positions_emoji_needle() {
+        // Emoji: 🔥 = 4 bytes (0xF0 0x9F 0x94 0xA5)
+        let pos = find_all_positions("x🔥y🔥z", "🔥");
+        assert_eq!(pos, vec![1, 6]);
     }
 
     #[test]
@@ -1031,5 +1049,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, "hi\nworld\n");
+    }
+}
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #[test]
+        fn find_all_positions_does_not_panic(haystack in ".*", needle in ".*") {
+            let _ = find_all_positions(&haystack, &needle);
+        }
+
+        #[test]
+        fn find_all_positions_results_non_overlapping(haystack in "[a-z]{0,100}", needle in "[a-z]{1,10}") {
+            let positions = find_all_positions(&haystack, &needle);
+            // Results should be non-overlapping
+            for w in positions.windows(2) {
+                prop_assert!(w[0] + needle.len() <= w[1],
+                    "overlapping results: {} + {} > {}", w[0], needle.len(), w[1]);
+            }
+        }
+
+        #[test]
+        fn normalize_line_endings_lf_idempotent(s in "[^\r]{0,100}") {
+            let once = normalize_line_endings(&s, "\n");
+            let twice = normalize_line_endings(&once, "\n");
+            prop_assert_eq!(once, twice);
+        }
+
+        #[test]
+        fn normalize_line_endings_crlf_produces_only_crlf(s in ".*") {
+            let result = normalize_line_endings(&s, "\r\n");
+            // Should not contain bare \n (only \r\n)
+            prop_assert!(!result.contains("\r\n\r"), "double CR found");
+            // Every \n should be preceded by \r
+            for (i, byte) in result.bytes().enumerate() {
+                if byte == b'\n' {
+                    if i > 0 {
+                        prop_assert_eq!(result.as_bytes()[i - 1], b'\r',
+                            "bare \\n at position {}", i);
+                    }
+                }
+            }
+        }
     }
 }
