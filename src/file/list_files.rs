@@ -494,6 +494,14 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
+// ── Fuzz exports ──
+#[cfg(feature = "fuzzing")]
+pub mod fuzz_exports {
+    pub fn glob_match(pattern: &str, name: &str) -> bool {
+        super::glob_match(pattern, name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

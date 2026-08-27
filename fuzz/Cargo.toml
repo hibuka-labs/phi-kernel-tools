@@ -1,0 +1,40 @@
+[package]
+name = "phi-kernel-tools-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.phi-kernel-tools]
+path = ".."
+features = ["fuzzing"]
+
+[patch.crates-io]
+agent-base = { path = "../../agent-base" }
+agent-works = { path = "../../agent-works" }
+
+[[bin]]
+name = "find_positions_fuzz"
+path = "fuzz_targets/find_positions_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "glob_match_fuzz"
+path = "fuzz_targets/glob_match_fuzz.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "edit_file_fuzz"
+path = "fuzz_targets/edit_file_fuzz.rs"
+test = false
+doc = false
+bench = false

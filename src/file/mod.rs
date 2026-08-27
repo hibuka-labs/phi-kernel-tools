@@ -16,6 +16,12 @@ pub use list_files::ListFilesTool;
 pub use read_file::ReadFileTool;
 pub use write_file::WriteFileTool;
 
+#[cfg(feature = "fuzzing")]
+pub mod fuzz {
+    pub use super::edit_file::fuzz_exports as edit_file;
+    pub use super::list_files::fuzz_exports as list_files;
+}
+
 use std::path::{Path, PathBuf};
 
 /// Resolve a user-supplied path to an absolute [`PathBuf`].

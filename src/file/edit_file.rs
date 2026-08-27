@@ -420,6 +420,9 @@ fn find_and_replace(
 
 /// Find positions where `needle` matches with trailing whitespace stripped from lines.
 fn find_rstrip_matches<'a>(haystack: &'a str, needle: &str) -> Vec<(usize, &'a str)> {
+    if needle.is_empty() {
+        return vec![];
+    }
     let mut results = Vec::new();
     let mut start = 0;
     let needle_len = needle.len();
@@ -451,6 +454,9 @@ fn find_rstrip_matches<'a>(haystack: &'a str, needle: &str) -> Vec<(usize, &'a s
 
 /// Find positions where `needle` matches with whitespace trimmed (but not across newlines).
 fn find_trim_matches<'a>(haystack: &'a str, needle: &str) -> Vec<(usize, &'a str)> {
+    if needle.is_empty() {
+        return vec![];
+    }
     let mut results = Vec::new();
     let mut start = 0;
     while start < haystack.len() {
@@ -493,6 +499,9 @@ fn find_trim_matches<'a>(haystack: &'a str, needle: &str) -> Vec<(usize, &'a str
 
 /// Find positions where `needle` matches after NFC normalization.
 fn find_nfc_matches<'a>(haystack: &'a str, needle_nfc: &str) -> Vec<(usize, &'a str)> {
+    if needle_nfc.is_empty() {
+        return vec![];
+    }
     let mut results = Vec::new();
     // Walk through haystack char by char, comparing NFC-normalized slices
     let chars: Vec<char> = haystack.chars().collect();
@@ -525,11 +534,39 @@ fn unicode_normalize(s: &str) -> String {
 
 /// Apply a replacement at the given byte position.
 fn apply_replace(content: &str, pos: usize, old: &str, new: &str) -> String {
-    let mut result = String::with_capacity(content.len() - old.len() + new.len());
+    let cap = content.len() + new.len();
+    let mut result = String::with_capacity(cap);
     result.push_str(&content[..pos]);
     result.push_str(new);
     result.push_str(&content[pos + old.len()..]);
     result
+}
+
+// ── Fuzz exports ──
+#[cfg(feature = "fuzzing")]
+pub mod fuzz_exports {
+    use super::*;
+
+    pub fn find_all_positions(haystack: &str, needle: &str) -> Vec<usize> {
+        super::find_all_positions(haystack, needle)
+    }
+
+    pub fn find_and_replace(
+        current: &str,
+        original: &str,
+        old_text: &str,
+        new_text: &str,
+    ) -> Result<String, String> {
+        let edit = Edit {
+            old_text: old_text.to_string(),
+            new_text: new_text.to_string(),
+        };
+        super::find_and_replace(current, original, &edit, 0)
+    }
+
+    pub fn normalize_line_endings(content: &str, line_ending: &str) -> String {
+        super::normalize_line_endings(content, line_ending)
+    }
 }
 
 #[cfg(test)]
