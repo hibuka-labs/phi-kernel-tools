@@ -253,4 +253,79 @@ mod tests {
             .unwrap();
         assert!(text(&result).contains("[Error]"));
     }
+
+    #[tokio::test]
+    async fn read_file_empty_path() {
+        let tool = ReadFileTool::new(crate_root());
+        let result = tool.call(&json!({"path": ""}), &ctx()).await.unwrap();
+        assert!(text(&result).contains("[Error]: No file path provided"));
+    }
+
+    #[tokio::test]
+    async fn read_file_with_offset_and_limit() {
+        let tool = ReadFileTool::new(crate_root());
+        let result = tool
+            .call(
+                &json!({"path": "Cargo.toml", "offset": 2, "limit": 3}),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        let content = text(&result);
+        assert!(content.contains("lines 3-5 of"));
+    }
+
+    #[tokio::test]
+    async fn read_file_not_a_file() {
+        let tool = ReadFileTool::new(crate_root());
+        let result = tool.call(&json!({"path": "src"}), &ctx()).await.unwrap();
+        assert!(text(&result).contains("[Error]: Path is not a file"));
+    }
+
+    #[tokio::test]
+    async fn read_file_empty_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("empty.txt");
+        std::fs::write(&file, "").unwrap();
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+        let result = tool
+            .call(&json!({"path": "empty.txt"}), &ctx())
+            .await
+            .unwrap();
+        assert!(text(&result).contains("(file is empty)"));
+    }
+
+    #[tokio::test]
+    async fn read_file_truncation() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("large.txt");
+        let content = "line\n".repeat(100);
+        std::fs::write(&file, content).unwrap();
+        let mut ctx = ToolContext::for_test();
+        ctx.max_output_chars = Some(100); // Very small limit to trigger truncation
+        let tool = ReadFileTool::new(dir.path().to_path_buf());
+        let result = tool
+            .call(&json!({"path": "large.txt"}), &ctx)
+            .await
+            .unwrap();
+        assert!(text(&result).contains("...(truncated"));
+    }
+
+    #[test]
+    fn read_file_metadata() {
+        let tool = ReadFileTool::new(crate_root());
+        assert_eq!(tool.name(), "read_file");
+        assert!(!tool.description().is_empty());
+        assert!(!tool.metadata().name.is_empty());
+    }
+
+    #[test]
+    fn read_file_schema() {
+        let tool = ReadFileTool::new(crate_root());
+        let schema = tool.schema();
+        assert_eq!(schema["type"], "object");
+        assert!(schema["properties"]["path"].is_object());
+        assert!(schema["properties"]["offset"].is_object());
+        assert!(schema["properties"]["limit"].is_object());
+    }
 }
