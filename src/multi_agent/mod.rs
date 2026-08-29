@@ -39,9 +39,11 @@ pub fn create_all_tools(runtime: Arc<MultiAgentRuntime>) -> Vec<Arc<dyn Tool>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_base::{Language, LlmClient, TypedTool};
+    use agent_base::llm_trait::{
+        Capabilities, ChatRequest, ChatResponse, ChatStream, LlmError, LlmProvider, ProviderInfo,
+    };
+    use agent_base::{Language, TypedTool};
     use agent_works::multi_agent::{ChildPermissionMode, MultiAgentConfig};
-    use std::pin::Pin;
     use tokio_util::sync::CancellationToken;
 
     // ── Minimal mock LLM client ──
@@ -49,43 +51,33 @@ mod tests {
     struct StubClient;
 
     #[async_trait::async_trait]
-    impl LlmClient for StubClient {
-        async fn chat(
-            &self,
-            _messages: &[agent_base::ChatMessage],
-            _tools: &[serde_json::Value],
-            _reasoning: Option<&agent_base::ReasoningConfig>,
-            _response_format: Option<&agent_base::ResponseFormat>,
-        ) -> agent_base::AgentResult<serde_json::Value> {
-            Ok(serde_json::json!({"choices": [{"message": {"content": "ok"}}]}))
-        }
-
-        async fn chat_stream(
-            &self,
-            _messages: &[agent_base::ChatMessage],
-            _tools: &[serde_json::Value],
-            _reasoning: Option<&agent_base::ReasoningConfig>,
-            _response_format: Option<&agent_base::ResponseFormat>,
-        ) -> agent_base::AgentResult<
-            Pin<
-                Box<
-                    dyn futures_core::Stream<
-                            Item = agent_base::AgentResult<agent_base::StreamChunk>,
-                        > + Send,
-                >,
-            >,
-        > {
-            let chunks: Vec<agent_base::AgentResult<agent_base::StreamChunk>> = vec![
+    impl LlmProvider for StubClient {
+        async fn stream(&self, _request: ChatRequest) -> Result<ChatStream, LlmError> {
+            let chunks = vec![
                 Ok(agent_base::StreamChunk::Text("ok".to_string())),
                 Ok(agent_base::StreamChunk::Stop {
                     finish_reason: Some("stop".to_string()),
                 }),
             ];
-            Ok(Box::pin(futures_util::stream::iter(chunks)))
+            Ok(ChatStream::new(Box::pin(futures_util::stream::iter(
+                chunks,
+            ))))
         }
 
-        fn capabilities(&self) -> agent_base::LlmCapabilities {
-            agent_base::LlmCapabilities {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LlmError> {
+            Ok(ChatResponse {
+                content: "ok".to_string(),
+                reasoning_content: None,
+                thinking_signature: None,
+                tool_calls: vec![],
+                finish_reason: agent_base::llm::FinishReason::Stop,
+                usage: agent_base::UsageInfo::default(),
+                raw: None,
+            })
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
                 supports_streaming: true,
                 supports_tools: true,
                 supports_vision: false,
@@ -94,10 +86,18 @@ mod tests {
                 max_output_tokens: None,
             }
         }
+
+        fn info(&self) -> ProviderInfo {
+            ProviderInfo {
+                name: "stub".to_string(),
+                model: "test".to_string(),
+                version: None,
+            }
+        }
     }
 
     fn make_runtime() -> Arc<MultiAgentRuntime> {
-        let client = agent_base::llm::adapt(Arc::new(StubClient));
+        let client: Arc<dyn agent_base::llm_trait::LlmProvider> = Arc::new(StubClient);
         let cancel = CancellationToken::new();
         Arc::new(MultiAgentRuntime::new(
             MultiAgentConfig::enabled(),
@@ -468,7 +468,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_spawn_agent_limit_exceeded() {
-        let client = agent_base::llm::adapt(Arc::new(StubClient));
+        let client: Arc<dyn agent_base::llm_trait::LlmProvider> = Arc::new(StubClient);
         let cancel = CancellationToken::new();
         let config = MultiAgentConfig {
             enabled: true,

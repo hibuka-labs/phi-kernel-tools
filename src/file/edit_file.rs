@@ -1124,11 +1124,9 @@ mod proptests {
             prop_assert!(!result.contains("\r\n\r"), "double CR found");
             // Every \n should be preceded by \r
             for (i, byte) in result.bytes().enumerate() {
-                if byte == b'\n' {
-                    if i > 0 {
-                        prop_assert_eq!(result.as_bytes()[i - 1], b'\r',
-                            "bare \\n at position {}", i);
-                    }
+                if byte == b'\n' && i > 0 {
+                    prop_assert_eq!(result.as_bytes()[i - 1], b'\r',
+                        "bare \\n at position {}", i);
                 }
             }
         }

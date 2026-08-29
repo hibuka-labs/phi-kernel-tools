@@ -4,12 +4,14 @@
 //! via the factory pattern, and that the full pipeline works end-to-end.
 
 #[cfg(feature = "multi-agent")]
-use std::pin::Pin;
-#[cfg(feature = "multi-agent")]
 use std::sync::Arc;
 
 #[cfg(feature = "multi-agent")]
-use agent_base::{AgentResult, ChatMessage, LlmCapabilities, LlmClient, StreamChunk};
+use agent_base::StreamChunk;
+#[cfg(feature = "multi-agent")]
+use agent_base::llm_trait::{
+    Capabilities, ChatRequest, ChatResponse, ChatStream, LlmError, LlmProvider, ProviderInfo,
+};
 #[cfg(feature = "multi-agent")]
 use agent_works::multi_agent::MultiAgentConfig;
 #[cfg(feature = "multi-agent")]
@@ -24,36 +26,33 @@ struct StubClient;
 
 #[cfg(feature = "multi-agent")]
 #[async_trait::async_trait]
-impl LlmClient for StubClient {
-    async fn chat(
-        &self,
-        _messages: &[ChatMessage],
-        _tools: &[serde_json::Value],
-        _reasoning: Option<&agent_base::ReasoningConfig>,
-        _response_format: Option<&agent_base::ResponseFormat>,
-    ) -> AgentResult<serde_json::Value> {
-        Ok(serde_json::json!({"choices": [{"message": {"content": "ok"}}]}))
-    }
-
-    async fn chat_stream(
-        &self,
-        _messages: &[ChatMessage],
-        _tools: &[serde_json::Value],
-        _reasoning: Option<&agent_base::ReasoningConfig>,
-        _response_format: Option<&agent_base::ResponseFormat>,
-    ) -> AgentResult<Pin<Box<dyn futures_core::Stream<Item = AgentResult<StreamChunk>> + Send>>>
-    {
-        let chunks: Vec<AgentResult<StreamChunk>> = vec![
+impl LlmProvider for StubClient {
+    async fn stream(&self, _request: ChatRequest) -> Result<ChatStream, LlmError> {
+        let chunks = vec![
             Ok(StreamChunk::Text("ok".to_string())),
             Ok(StreamChunk::Stop {
                 finish_reason: Some("stop".to_string()),
             }),
         ];
-        Ok(Box::pin(futures_util::stream::iter(chunks)))
+        Ok(ChatStream::new(Box::pin(futures_util::stream::iter(
+            chunks,
+        ))))
     }
 
-    fn capabilities(&self) -> LlmCapabilities {
-        LlmCapabilities {
+    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        Ok(ChatResponse {
+            content: "ok".to_string(),
+            reasoning_content: None,
+            thinking_signature: None,
+            tool_calls: vec![],
+            finish_reason: agent_base::llm::FinishReason::Stop,
+            usage: agent_base::UsageInfo::default(),
+            raw: None,
+        })
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
             supports_streaming: true,
             supports_tools: true,
             supports_vision: false,
@@ -62,11 +61,19 @@ impl LlmClient for StubClient {
             max_output_tokens: None,
         }
     }
+
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            name: "stub".to_string(),
+            model: "test".to_string(),
+            version: None,
+        }
+    }
 }
 
 #[cfg(feature = "multi-agent")]
-fn make_client() -> Arc<dyn agent_base::StreamClient> {
-    agent_base::llm::adapt(Arc::new(StubClient))
+fn make_client() -> Arc<dyn LlmProvider> {
+    Arc::new(StubClient)
 }
 
 /// Helper: get sorted list of registered tool names from a runtime.
