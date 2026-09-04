@@ -92,7 +92,7 @@ fn registered_tool_names(runtime: &agent_base::AgentRuntime) -> Vec<String> {
 #[cfg(feature = "multi-agent")]
 async fn test_inject_multi_agent_tools_via_factory() {
     let client = make_client();
-    let factory: MultiAgentToolFactory = Arc::new(multi_agent::create_all_tools);
+    let factory: MultiAgentToolFactory = Arc::new(move |rt| multi_agent::create_all_tools(rt, std::env::current_dir().unwrap()));
 
     let runtime = AgentBuilder::new(client)
         .with_multi_agent(MultiAgentConfig::enabled())
@@ -110,14 +110,6 @@ async fn test_inject_multi_agent_tools_via_factory() {
         "send_message should be registered"
     );
     assert!(
-        names.contains(&"followup_task".to_string()),
-        "followup_task should be registered"
-    );
-    assert!(
-        names.contains(&"wait_agent".to_string()),
-        "wait_agent should be registered"
-    );
-    assert!(
         names.contains(&"list_agents".to_string()),
         "list_agents should be registered"
     );
@@ -125,10 +117,22 @@ async fn test_inject_multi_agent_tools_via_factory() {
         names.contains(&"close_agent".to_string()),
         "close_agent should be registered"
     );
+    // followup_task is deprecated and no longer registered (§8.3); its
+    // trigger semantics now live in send_message(trigger=true).
+    assert!(
+        !names.contains(&"followup_task".to_string()),
+        "followup_task must not be registered anymore"
+    );
+    // wait_agent is gone too: results are pushed to the parent automatically;
+    // the parent waits by ending its turn, never by pulling with a tool.
+    assert!(
+        !names.contains(&"wait_agent".to_string()),
+        "wait_agent must not be registered anymore"
+    );
     assert_eq!(
         names.len(),
-        6,
-        "Expected exactly 6 multi-agent tools, got: {:?}",
+        4,
+        "Expected exactly 4 multi-agent tools, got: {:?}",
         names
     );
 }
@@ -150,7 +154,7 @@ async fn test_builder_without_factory_has_no_multi_agent_tools() {
 
 #[tokio::test(flavor = "multi_thread")]
 #[cfg(feature = "multi-agent")]
-async fn test_create_all_tools_returns_six_distinct_tools() {
+async fn test_create_all_tools_returns_four_distinct_tools() {
     use agent_works::multi_agent::MultiAgentRuntime;
     use tokio_util::sync::CancellationToken;
 
@@ -166,23 +170,70 @@ async fn test_create_all_tools_returns_six_distinct_tools() {
         None,
     ));
 
-    let tools = multi_agent::create_all_tools(rt);
-    assert_eq!(tools.len(), 6);
+    let tools = multi_agent::create_all_tools(rt, std::env::current_dir().unwrap());
+    assert_eq!(tools.len(), 4);
 
     let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
     assert!(names.contains(&"spawn_agent"));
     assert!(names.contains(&"send_message"));
-    assert!(names.contains(&"followup_task"));
-    assert!(names.contains(&"wait_agent"));
     assert!(names.contains(&"list_agents"));
     assert!(names.contains(&"close_agent"));
+}
+
+/// Compat red line (§12 stage 3): the exact wire format phimint's decompose
+/// prompt instructs — `spawn_agent task_name=<name>, message="..."` — must
+/// still spawn successfully through the untyped `Tool::call` path (which is
+/// what the LLM actually drives: serde aliases on the real dispatch route).
+#[tokio::test(flavor = "multi_thread")]
+#[cfg(feature = "multi-agent")]
+async fn phimint_legacy_wire_shape_spawns_end_to_end() {
+    use agent_works::multi_agent::MultiAgentRuntime;
+    use tokio_util::sync::CancellationToken;
+
+    let rt = Arc::new(MultiAgentRuntime::new(
+        MultiAgentConfig::enabled(),
+        make_client(),
+        vec![],
+        CancellationToken::new(),
+        None,
+        agent_base::Language::En,
+        None,
+        None,
+    ));
+
+    let tools = multi_agent::create_all_tools(rt.clone(), std::env::current_dir().unwrap());
+    let spawn = tools
+        .iter()
+        .find(|t| t.name() == "spawn_agent")
+        .expect("spawn_agent in factory");
+
+    // Byte-for-byte the new minimal wire shape: task_name + task carry
+    // everything the child needs (no conversation context is inherited
+    // unless fork_turns is set).
+    let wire = serde_json::json!({
+        "task_name": "slice_1",
+        "task": "Context: repo layout\nInvestigate and report: module boundaries"
+    });
+    let ctx = agent_base::ToolContext::for_test();
+    let content = spawn
+        .call(&wire, &ctx)
+        .await
+        .expect("minimal wire shape must not error");
+    let text = agent_base::tool::content_text(&content);
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(v["agent_path"], "root/slice_1");
+    assert_eq!(v["message"], "Agent spawned successfully");
+
+    // The child really works: wait collects its answer.
+    let res = rt.wait_for_result(Some("root/slice_1"), 5000).await;
+    assert_eq!(res.status, "ok");
 }
 
 #[tokio::test(flavor = "multi_thread")]
 #[cfg(feature = "multi-agent")]
 async fn test_multi_agent_disabled_does_not_register_tools() {
     let client = make_client();
-    let factory: MultiAgentToolFactory = Arc::new(multi_agent::create_all_tools);
+    let factory: MultiAgentToolFactory = Arc::new(move |rt| multi_agent::create_all_tools(rt, std::env::current_dir().unwrap()));
 
     // Default config has enabled=false
     let runtime = AgentBuilder::new(client)

@@ -1,59 +1,76 @@
 use std::sync::Arc;
 
 use agent_base::{AgentResult, ToolContext, TypedTool};
-use agent_works::focus::Focus;
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
 
-/// System prompt template for Focus-based prompt generation.
+/// Static system prompt for every spawned sub-agent.
 ///
-/// When the LLM provides a short `task` description instead of a full
-/// `system_prompt`, a Focus call expands it into a proper system prompt
-/// using this template.
-const FOCUS_SYSTEM_PROMPT: &str = "\
-You are a prompt engineer. Given a short task description, generate a complete \
-system prompt for a sub-agent. The system prompt should:
-1. Define the agent's role clearly
-2. State the specific task to accomplish
-3. Mention available tools briefly if relevant
-4. Be concise (under 500 words)
+/// Session 20260903_d8fc41dc: the previous design ran a Focus LLM call here
+/// to expand the task into a bespoke system prompt. With a slow reasoning
+/// model the 10 s budget failed 4/4, each spawn serialized a 10 s dead wait
+/// into the parent's turn, and the children ran on the fallback template
+/// anyway — producing excellent reports. Conclusion: a capable child only
+/// needs its role stated plus a complete task; it plans by itself. Zero LLM
+/// cost, zero truncation/timeout surface on the spawn path.
+///
+/// The last paragraph is generic path discipline (no domain assumptions):
+/// children share the parent's process working directory, and session
+/// 20260904_3eeb5610 showed a child silently resolving relative paths
+/// against it while analyzing a different directory from its task — then
+/// rationalizing the mismatch instead of re-checking. The concrete working
+/// directory is appended per-spawn in [`SpawnAgentTool::call_typed`].
+const CHILD_SYSTEM_PROMPT: &str = "\
+You are a focused sub-agent spawned to handle exactly one task. The task is \
+the first message you receive. Work autonomously — there is no one to ask \
+mid-task: use the available tools to gather what you need, then deliver. \
+Your final message is your deliverable: make it complete, structured, and \
+self-contained, with concrete evidence (file paths, line references, \
+measurements) for every claim. State limitations explicitly instead of \
+guessing.
 
-Output ONLY the system prompt text, nothing else.";
+Path discipline: relative paths in tool calls resolve against your working \
+directory (stated below). When the task specifies an absolute path, use it \
+verbatim in tool calls. When what you observe contradicts what the task \
+describes, re-verify your location and paths before drawing conclusions.";
+
+/// Tool description, hoisted into a const so tests can guard its semantics
+/// (the same drift class that put "keep `task` one sentence" here while the
+/// expansion step it depended on no longer exists).
+const DESCRIPTION: &str = "\
+Spawn an independent sub-agent to handle a task.\n\
+Sub-agents start with NO context of this conversation and see\n\
+nothing but `task` — it must be COMPLETE and self-contained:\n\
+the goal, the full paths of anything to analyze, the scope,\n\
+and what the final report should cover (e.g. \"Analyze\n\
+/Users/me/demo/codex: map the module structure, then explain\n\
+the agent loop, tool system, and error-handling patterns;\n\
+report with file paths and line references\").\n\
+Give it a short unique name (task_name).\n\
+Omit `model` unless the user explicitly asked for a different one.";
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SpawnAgentArgs {
-    /// Unique name for this sub-agent (used in agent path)
+    /// Unique name for this sub-agent (used in the agent path)
     pub task_name: String,
-    /// Initial task description for the sub-agent
-    pub message: String,
-    /// What you want the sub-agent to do. Describe the goal, not the steps.
-    /// The sub-agent has its own tools and will figure out the approach.
-    /// Example: "analyze the codex project structure and output a structured report"
+    /// What you want the sub-agent to do. The task must be COMPLETE and
+    /// self-contained — the sub-agent starts with NO context of this
+    /// conversation (unless fork_turns is set) and sees nothing but this
+    /// text: include the goal, the full paths of anything to analyze, the
+    /// scope, and what the final report should cover.
+    pub task: String,
+    /// How much of this conversation's history to give the sub-agent:
+    /// `none` (default), `all`, or a number N for the last N turns.
+    /// Use `none` only when the task is fully described in `task`.
     #[serde(default)]
-    pub task: Option<String>,
-    /// Optional role type that maps to a preset configuration
+    pub fork_turns: Option<String>,
+    /// Model override for the sub-agent. Omit to inherit the parent's model.
+    /// TODO(layer-3): request-level model routing is not wired yet — the
+    /// value is accepted and stored on the child config but currently
+    /// ignored at LLM-call time. Remove this note once llm-trait carries
+    /// a per-request model field.
     #[serde(default)]
-    pub agent_type: Option<String>,
-    /// Optional custom system prompt (overrides task and agent_type).
-    /// Prefer using `task` instead — it's shorter and less likely to be truncated.
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-    /// Optional history: 'none' (default), 'all', or a number N
-    #[serde(default)]
-    pub fork_history: Option<String>,
-    /// Nesting depth for this agent. 1 = direct child of root, 2 = grandchild, etc.
-    /// Defaults to 1 (direct child).
-    #[serde(default = "default_depth")]
-    pub depth: i32,
-    /// Whether to grant the sub-agent full permission to run tools without
-    /// approval. Default `false` = deny all approvals (safe). Set `true` only
-    /// when the sub-agent is trusted to take dangerous actions.
-    #[serde(default)]
-    pub full_permission: bool,
-}
-
-fn default_depth() -> i32 {
-    1
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -64,11 +81,19 @@ pub struct SpawnAgentOutput {
 
 pub struct SpawnAgentTool {
     runtime: Arc<MultiAgentRuntime>,
+    /// Directory the child's file tools resolve relative paths against.
+    /// Injected as a fact into the child's system prompt — children share
+    /// the parent's process cwd, which session 20260904_3eeb5610 showed a
+    /// child silently analyzing the wrong directory from its task.
+    workspace_root: std::path::PathBuf,
 }
 
 impl SpawnAgentTool {
-    pub fn new(runtime: Arc<MultiAgentRuntime>) -> Self {
-        Self { runtime }
+    pub fn new(runtime: Arc<MultiAgentRuntime>, workspace_root: std::path::PathBuf) -> Self {
+        Self {
+            runtime,
+            workspace_root,
+        }
     }
 }
 
@@ -82,43 +107,40 @@ impl TypedTool for SpawnAgentTool {
     }
 
     fn description(&self) -> &'static str {
-        "Spawn an independent sub-agent to handle a task.\n\
-         The sub-agent has its own tools (repo_map, read_file, list_files, etc.)\n\
-         and can reason, read files, and explore codebases autonomously.\n\
-         Use the `task` field to describe what you want done (e.g. \"analyze the\n\
-         codex project structure and output a structured report\"). The system\n\
-         generates a full prompt automatically — no need to write detailed\n\
-         instructions. The sub-agent will figure out the steps itself."
+        DESCRIPTION
     }
 
     async fn call_typed(&self, args: Self::Args, ctx: &ToolContext) -> AgentResult<Self::Output> {
-        // Priority: system_prompt > task (via Focus) > agent_type > message
-        let system_prompt = if let Some(sp) = args.system_prompt {
-            // Explicit system prompt — use as-is
-            sp
-        } else if let Some(task) = args.task {
-            // Short task description — expand via Focus
-            expand_task_via_focus(self.runtime.client(), &task).await
-        } else if let Some(agent_type) = args.agent_type {
-            // Preset role type
-            format!("You are a {} specialist.", agent_type)
-        } else {
-            // Fallback: use message as system prompt (legacy behavior)
-            args.message.clone()
-        };
+        // The task doubles as the message sent to the child after spawn.
+        let message = args.task.clone();
 
-        let depth = args.depth;
-        let tool_count = 0;
+        // Static role prompt + path discipline (see CHILD_SYSTEM_PROMPT),
+        // with the concrete working directory as a plain fact — no LLM call
+        // on the spawn path.
+        let system_prompt = format!(
+            "{CHILD_SYSTEM_PROMPT}\n\nWorking directory: {}",
+            self.workspace_root.display()
+        );
+
+        // Non-LLM knob: permission comes from configuration
+        // (ChildPermissionMode), not from the model. Depth is structurally
+        // fixed at 1 (nesting absent, agent-works K5).
+        let full_permission = false;
+
+        // Fork-history priority: explicit LLM choice > configured default
+        // (MultiAgentConfig::child_fork_history) > none.
+        let fork_turns = args
+            .fork_turns
+            .or_else(|| self.runtime.child_fork_history().map(str::to_owned));
 
         match self
             .runtime
             .spawn_child_with_history(
                 &args.task_name,
                 system_prompt,
-                depth,
-                tool_count,
-                args.full_permission,
-                args.fork_history,
+                full_permission,
+                fork_turns,
+                args.model,
                 &ctx.session_id,
             )
             .await
@@ -126,7 +148,9 @@ impl TypedTool for SpawnAgentTool {
             Ok(agent_path) => {
                 let _ = self
                     .runtime
-                    .send_task(&agent_path, args.message.clone(), true);
+                    .send_task(&agent_path, message, true);
+                // TODO(layer-3): args.model is accepted but inert until
+                // request-level model routing lands (see SpawnAgentArgs::model).
                 Ok(SpawnAgentOutput {
                     agent_path,
                     message: "Agent spawned successfully".to_string(),
@@ -140,53 +164,70 @@ impl TypedTool for SpawnAgentTool {
     }
 }
 
-/// Expand a short task description into a full system prompt via Focus.
-///
-/// This is the core of the "task-based spawn" approach: the LLM writes a
-/// short task (e.g. "analyze codex structure"), and Focus generates a
-/// proper system prompt from it, avoiding the truncation issue that occurs
-/// when the LLM tries to inline a full prompt in tool call arguments.
-async fn expand_task_via_focus(
-    client: &Arc<dyn agent_base::llm_trait::LlmProvider>,
-    task: &str,
-) -> String {
-    let focus = Focus::new(Arc::clone(client), FOCUS_SYSTEM_PROMPT);
-    let timeout = std::time::Duration::from_secs(10);
+#[cfg(test)]
+mod spawn_prompt_guard_tests {
+    //! Guards the spawn-path semantics after the Focus-expansion removal
+    //! (session 20260903_d8fc41dc): the child gets a static role prompt and
+    //! a self-contained task — no LLM call, and no stale "keep `task` one
+    //! sentence" guidance that only made sense when Focus expanded it.
+    //!
+    //! The path-discipline assertions guard session 20260904_3eeb5610: a
+    //! child analyzed the wrong directory because it resolved relative paths
+    //! against its (parent-inherited) working directory and rationalized the
+    //! mismatch instead of re-checking.
 
-    // Focus forces JSON output, so we wrap the prompt in a struct.
-    #[derive(serde::Deserialize)]
-    struct PromptResult {
-        prompt: String,
+    use super::{CHILD_SYSTEM_PROMPT, DESCRIPTION};
+
+    #[test]
+    fn child_prompt_states_autonomy_and_deliverable() {
+        assert!(
+            CHILD_SYSTEM_PROMPT.contains("Work autonomously"),
+            "child prompt must tell the child it plans and works alone"
+        );
+        assert!(
+            CHILD_SYSTEM_PROMPT.contains("final message is your deliverable"),
+            "child prompt must define the final message as the report — \
+             the parent only ever receives that text"
+        );
     }
 
-    // Ask Focus to return {"prompt": "..."} format.
-    let input = format!(
-        "Generate a system prompt for a sub-agent whose task is: {}\n\
-         Return JSON: {{\"prompt\": \"<the system prompt>\"}}",
-        task
-    );
+    #[test]
+    fn child_prompt_carries_path_discipline() {
+        assert!(
+            CHILD_SYSTEM_PROMPT.contains("relative paths in tool calls resolve against"),
+            "child prompt must state how relative paths resolve — children \
+             inherit the parent cwd and cannot discover this fact themselves"
+        );
+        assert!(
+            CHILD_SYSTEM_PROMPT.contains("use it verbatim in tool calls"),
+            "task absolute paths must be mandated verbatim"
+        );
+        assert!(
+            CHILD_SYSTEM_PROMPT.contains("re-verify your location and paths before drawing conclusions"),
+            "observation/task contradictions must trigger a path re-check, \
+             not a rationalization (session 20260904_3eeb5610)"
+        );
+        // Domain neutrality: the discipline must not assume what the task
+        // is about (no "project"/"target directory" phrasing).
+        assert!(
+            !CHILD_SYSTEM_PROMPT.contains("project") && !CHILD_SYSTEM_PROMPT.contains("target"),
+            "path discipline must stay domain-neutral"
+        );
+    }
 
-    match focus.ask::<PromptResult>(&input, timeout).await {
-        Ok(output) => {
-            tracing::info!(
-                task = task,
-                prompt_len = output.result.prompt.len(),
-                "Focus expanded task into system prompt"
-            );
-            output.result.prompt
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                task = task,
-                "Focus failed to expand task, using fallback template"
-            );
-            // Fallback: simple template
-            format!(
-                "You are a helpful assistant. Your task is: {}. \
-                 Use the available tools to complete this task effectively.",
-                task
-            )
-        }
+    #[test]
+    fn description_demands_self_contained_task() {
+        assert!(
+            DESCRIPTION.contains("COMPLETE and self-contained"),
+            "task must be described as complete and self-contained"
+        );
+        assert!(
+            DESCRIPTION.contains("NO context"),
+            "description must warn that the child sees nothing but the task"
+        );
+        assert!(
+            !DESCRIPTION.contains("one\nsentence") && !DESCRIPTION.contains("one sentence"),
+            "the one-sentence guidance belonged to the removed Focus expansion"
+        );
     }
 }

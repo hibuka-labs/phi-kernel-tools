@@ -1,7 +1,13 @@
 //! Multi-agent kernel tools.
 //!
-//! Six tools that the LLM uses to manage sub-agents:
-//! spawn, send_message, followup_task, wait, list, close.
+//! Four tools that the LLM uses to manage sub-agents: spawn, send_message,
+//! list, close. There is deliberately **no** `wait_agent` tool: child results
+//! are pushed into the parent's context automatically (watcher → TUI), and
+//! the parent "waits" by simply ending its turn. A blocking-wait tool would
+//! hand the model a truncation-prone escape hatch that bypasses the push
+//! pipeline. (`followup_task` still exists as a deprecated shim —
+//! it forwards to `send_message(trigger=true)` and is kept for one version
+//! outside this factory, design doc §8.3.)
 //!
 //! Each tool holds an `Arc<MultiAgentRuntime>` and delegates to its methods.
 
@@ -15,22 +21,30 @@ mod followup_task;
 mod list_agents;
 mod send_message;
 mod spawn_agent;
-mod wait_agent;
 
 pub use close_agent::{CloseAgentArgs, CloseAgentOutput, CloseAgentTool};
+#[allow(deprecated)]
 pub use followup_task::{FollowupTaskArgs, FollowupTaskOutput, FollowupTaskTool};
 pub use list_agents::{ListAgentItem, ListAgentsArgs, ListAgentsTool};
 pub use send_message::{SendMessageArgs, SendMessageOutput, SendMessageTool};
 pub use spawn_agent::{SpawnAgentArgs, SpawnAgentOutput, SpawnAgentTool};
-pub use wait_agent::{WaitAgentArgs, WaitAgentOutput, WaitAgentTool};
 
-/// Create all 6 multi-agent tools, sharing the same runtime.
-pub fn create_all_tools(runtime: Arc<MultiAgentRuntime>) -> Vec<Arc<dyn Tool>> {
+/// Create the 4 active multi-agent tools, sharing the same runtime.
+///
+/// `workspace_root` is injected into each child's system prompt as a plain
+/// fact ("Working directory: …") — children share the parent's process cwd
+/// and otherwise cannot discover how their relative paths resolve.
+///
+/// No `wait_agent`: results are pushed to the parent automatically; the
+/// parent waits by ending its turn. `followup_task` is also **not** here
+/// (§8.3): its trigger semantics now live in `send_message(trigger=true)`.
+pub fn create_all_tools(
+    runtime: Arc<MultiAgentRuntime>,
+    workspace_root: std::path::PathBuf,
+) -> Vec<Arc<dyn Tool>> {
     vec![
-        Arc::new(SpawnAgentTool::new(runtime.clone())),
+        Arc::new(SpawnAgentTool::new(runtime.clone(), workspace_root)),
         Arc::new(SendMessageTool::new(runtime.clone())),
-        Arc::new(FollowupTaskTool::new(runtime.clone())),
-        Arc::new(WaitAgentTool::new(runtime.clone())),
         Arc::new(ListAgentsTool::new(runtime.clone())),
         Arc::new(CloseAgentTool::new(runtime)),
     ]
@@ -43,7 +57,7 @@ mod tests {
         Capabilities, ChatRequest, ChatResponse, ChatStream, LlmError, LlmProvider, ProviderInfo,
     };
     use agent_base::{Language, TypedTool};
-    use agent_works::multi_agent::{ChildPermissionMode, MultiAgentConfig};
+    use agent_works::multi_agent::MultiAgentConfig;
     use tokio_util::sync::CancellationToken;
 
     // ── Minimal mock LLM client ──
@@ -119,23 +133,30 @@ mod tests {
 
     #[test]
     fn test_spawn_agent_tool_metadata() {
-        let t = SpawnAgentTool::new(make_runtime());
+        let t = SpawnAgentTool::new(make_runtime(), std::env::current_dir().unwrap());
         assert_eq!(agent_base::TypedTool::name(&t), "spawn_agent");
         assert!(!agent_base::TypedTool::description(&t).is_empty());
         let schema = t.schema();
         assert_eq!(schema["type"], "object");
-        assert!(
-            schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&"task_name".into())
-        );
-        assert!(
-            schema["required"]
-                .as_array()
-                .unwrap()
-                .contains(&"message".into())
-        );
+        // Minimal LLM-facing schema: task_name + task are required;
+        // fork_turns / model are optional overrides. depth/full_permission
+        // stay config-driven and never appear in the schema.
+        let required = schema["required"].as_array().unwrap();
+        assert!(required.contains(&"task_name".into()));
+        assert!(required.contains(&"task".into()));
+        let props = schema["properties"].as_object().unwrap();
+        assert_eq!(props.len(), 4, "schema must stay minimal: {props:?}");
+        assert!(props.contains_key("task"));
+        assert!(props.contains_key("task_name"));
+        assert!(props.contains_key("fork_turns"));
+        assert!(props.contains_key("model"));
+        // Removed fields must stay out of the schema.
+        assert!(!props.contains_key("system_prompt"));
+        assert!(!props.contains_key("message"));
+        assert!(!props.contains_key("agent_type"));
+        assert!(!props.contains_key("fork_history"));
+        assert!(!props.contains_key("depth"));
+        assert!(!props.contains_key("full_permission"));
     }
 
     #[test]
@@ -154,6 +175,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_followup_task_tool_metadata() {
         let t = FollowupTaskTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "followup_task");
@@ -165,17 +187,13 @@ mod tests {
                 .unwrap()
                 .contains(&"agent_path".into())
         );
-    }
-
-    #[test]
-    fn test_wait_agent_tool_metadata() {
-        let t = WaitAgentTool::new(make_runtime());
-        assert_eq!(agent_base::TypedTool::name(&t), "wait_agent");
-        assert!(!agent_base::TypedTool::description(&t).is_empty());
-        let schema = t.schema();
-        assert_eq!(schema["type"], "object");
-        // All fields are optional, so schemars omits the `required` key.
-        assert!(schema.get("required").is_none());
+        // The dead `interrupt` flag is off the schema (K2 / §8.3).
+        assert!(
+            !schema["properties"]
+                .as_object()
+                .unwrap()
+                .contains_key("interrupt")
+        );
     }
 
     #[test]
@@ -205,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_spawn_agent_format_output() {
-        let t = SpawnAgentTool::new(make_runtime());
+        let t = SpawnAgentTool::new(make_runtime(), std::env::current_dir().unwrap());
         let out = t.format_output(SpawnAgentOutput {
             agent_path: "root/w1".into(),
             message: "ok".into(),
@@ -226,6 +244,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn test_followup_task_format_output() {
         let t = FollowupTaskTool::new(make_runtime());
         let out = t.format_output(FollowupTaskOutput {
@@ -235,22 +254,6 @@ mod tests {
         let text = agent_base::tool::content_text(&[out]);
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(v["accepted"], true);
-    }
-
-    #[test]
-    fn test_wait_agent_format_output() {
-        let t = WaitAgentTool::new(make_runtime());
-        let out = t.format_output(WaitAgentOutput {
-            status: "timeout".into(),
-            result: None,
-            agent_path: None,
-            has_more: false,
-            denied_tools: vec![],
-        });
-        let text = agent_base::tool::content_text(&[out]);
-        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(v["status"], "timeout");
-        assert_eq!(v["has_more"], false);
     }
 
     #[test]
@@ -305,6 +308,7 @@ mod tests {
                 SendMessageArgs {
                     agent_path: "root/ghost".into(),
                     message: "hi".into(),
+                    trigger: false,
                 },
                 &ctx,
             )
@@ -314,6 +318,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn test_followup_task_nonexistent() {
         let rt = make_runtime();
         let t = FollowupTaskTool::new(rt);
@@ -323,7 +328,6 @@ mod tests {
                 FollowupTaskArgs {
                     agent_path: "root/ghost".into(),
                     task: "do".into(),
-                    interrupt: true,
                 },
                 &ctx,
             )
@@ -332,7 +336,7 @@ mod tests {
         assert!(!result.accepted);
     }
 
-    // ── send_message + followup_task + wait result round-trip ──
+    // ── send_message + followup_task round-trip ──
 
     #[tokio::test]
     async fn test_send_message_and_followup_task_roundtrip() {
@@ -340,7 +344,7 @@ mod tests {
 
         // Spawn a child first
         let path = rt
-            .spawn_child("worker", "you are a worker".into(), 1, 0, false, vec![])
+            .spawn_child("worker", "you are a worker".into() , 1, false, vec![])
             .await
             .unwrap();
 
@@ -352,6 +356,7 @@ mod tests {
                 SendMessageArgs {
                     agent_path: path.clone(),
                     message: "context info".into(),
+                    trigger: false,
                 },
                 &ctx,
             )
@@ -359,33 +364,24 @@ mod tests {
             .unwrap();
         assert!(result.delivered);
 
-        // Send a task (triggers execution, drains pending messages)
-        let t2 = FollowupTaskTool::new(rt.clone());
-        let result2 = t2
+        // Send a task via the NEW trigger flag (send_message(trigger=true)
+        // replaces followup_task; the deprecated shim forwards here).
+        let result2 = t
             .call_typed(
-                FollowupTaskArgs {
+                SendMessageArgs {
                     agent_path: path.clone(),
-                    task: "do work".into(),
-                    interrupt: true,
+                    message: "do work".into(),
+                    trigger: true,
                 },
                 &ctx,
             )
             .await
             .unwrap();
-        assert!(result2.accepted);
+        assert!(result2.delivered);
 
-        // Wait for result
-        let t3 = WaitAgentTool::new(rt.clone());
-        let result3 = t3
-            .call_typed(
-                WaitAgentArgs {
-                    agent_path: Some(path.clone()),
-                    timeout_ms: 5000,
-                },
-                &ctx,
-            )
-            .await
-            .unwrap();
+        // Result arrives via the runtime's push pipeline; the LLM-facing
+        // wait_agent tool is gone — collect it through the internal API.
+        let result3 = rt.wait_for_result(Some(&path), 5000).await;
         assert_eq!(result3.status, "ok");
         assert!(result3.result.is_some());
 
@@ -404,23 +400,23 @@ mod tests {
     }
 
     // ── spawn_agent call_typed ──
+    //
+    // The behavioural matrix (aliases, three-level fallback, B5, presets)
+    // lives in spawn_agent.rs's own tests; these cover factory-level wiring.
 
     #[tokio::test]
     async fn test_spawn_agent_call() {
         let rt = make_runtime();
-        let t = SpawnAgentTool::new(rt.clone());
+        let t = SpawnAgentTool::new(rt.clone(), std::env::current_dir().unwrap());
         let ctx = make_tool_ctx();
 
         let result = t
             .call_typed(
                 SpawnAgentArgs {
                     task_name: "helper".into(),
-                    message: "do something".into(),
-                    agent_type: None,
-                    system_prompt: Some("you are a helper".into()),
-                    fork_history: None,
-                    depth: 1,
-                    full_permission: false,
+                    task: "do something useful".into(),
+                    fork_turns: None,
+                    model: None,
                 },
                 &ctx,
             )
@@ -428,7 +424,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.agent_path, "root/helper");
-        assert!(result.message.contains("spawned"));
+        assert_eq!(result.message, "Agent spawned successfully");
 
         // Verify the agent shows up in list
         let t2 = ListAgentsTool::new(rt);
@@ -437,115 +433,71 @@ mod tests {
         assert_eq!(list[0].agent_path, "root/helper");
     }
 
-    // ── spawn with auto-generated system prompt from agent_type ──
-
-    #[tokio::test]
-    async fn test_spawn_agent_with_agent_type() {
-        let rt = make_runtime();
-        let t = SpawnAgentTool::new(rt);
-        let ctx = make_tool_ctx();
-
-        let result = t
-            .call_typed(
-                SpawnAgentArgs {
-                    task_name: "searcher".into(),
-                    message: "search for info".into(),
-                    agent_type: Some("researcher".into()),
-                    system_prompt: None,
-                    fork_history: None,
-                    depth: 1,
-                    full_permission: false,
-                },
-                &ctx,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(result.agent_path, "root/searcher");
-    }
-
-    // ── spawn limit exceeded ──
+    // ── spawn limit exceeded → Err (B5: no more fake-Ok) ──
 
     #[tokio::test]
     async fn test_spawn_agent_limit_exceeded() {
-        let client: Arc<dyn agent_base::llm_trait::LlmProvider> = Arc::new(StubClient);
-        let cancel = CancellationToken::new();
         let config = MultiAgentConfig {
-            enabled: true,
             max_sub_agents: 1,
-            max_agent_depth: 1,
-            child_permission_mode: ChildPermissionMode::Full,
-            child_excluded_tools: Vec::new(),
-            child_reasoning_effort: None,
-            child_read_only: true,
+            ..MultiAgentConfig::enabled()
         };
         let rt = Arc::new(MultiAgentRuntime::new(
             config,
-            client,
+            Arc::new(StubClient),
             vec![],
-            cancel,
+            CancellationToken::new(),
             None,
             Language::En,
             None,
             None,
         ));
 
-        let t = SpawnAgentTool::new(rt.clone());
+        let t = SpawnAgentTool::new(rt.clone(), std::env::current_dir().unwrap());
         let ctx = make_tool_ctx();
+        let mk = |n: &str| SpawnAgentArgs {
+            task_name: n.into(),
+            task: "do the task".into(),
+            fork_turns: None,
+            model: None,
+        };
 
-        // First spawn succeeds
-        let r1 = t
-            .call_typed(
-                SpawnAgentArgs {
-                    task_name: "first".into(),
-                    message: "task".into(),
-                    agent_type: None,
-                    system_prompt: None,
-                    fork_history: None,
-                    depth: 1,
-                    full_permission: false,
-                },
-                &ctx,
-            )
+        t.call_typed(mk("first"), &ctx)
             .await
-            .unwrap();
-        assert_eq!(r1.agent_path, "root/first");
-
-        // Second spawn fails
-        let r2 = t
-            .call_typed(
-                SpawnAgentArgs {
-                    task_name: "second".into(),
-                    message: "task".into(),
-                    agent_type: None,
-                    system_prompt: None,
-                    fork_history: None,
-                    depth: 1,
-                    full_permission: false,
-                },
-                &ctx,
-            )
+            .expect("first spawn ok");
+        // Second spawn hits the limit. The tool reports failure as an
+        // Ok(SpawnAgentOutput) with an error message (not a typed Err).
+        let result = t
+            .call_typed(mk("second"), &ctx)
             .await
-            .unwrap();
-
-        assert!(r2.agent_path.is_empty());
-        assert!(r2.message.contains("Failed"));
+            .expect("second spawn call resolves");
+        assert!(
+            result.agent_path.is_empty()
+                && result.message.contains("max agents reached"),
+            "second spawn must report the limit failure, got: {result:?}"
+        );
     }
 
-    // ── create_all_tools ──
+    // ── create_all_tools: 4 active tools (followup_task and wait_agent
+    //    dropped — §8.3 and the push-based result delivery) ──
 
     #[test]
-    fn test_create_all_tools_returns_six() {
+    fn test_create_all_tools_returns_four() {
         let rt = make_runtime();
-        let tools = create_all_tools(rt);
-        assert_eq!(tools.len(), 6);
+        let tools = create_all_tools(rt, std::env::current_dir().unwrap());
+        assert_eq!(tools.len(), 4);
 
         let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
         assert!(names.contains(&"spawn_agent"));
         assert!(names.contains(&"send_message"));
-        assert!(names.contains(&"followup_task"));
-        assert!(names.contains(&"wait_agent"));
         assert!(names.contains(&"list_agents"));
         assert!(names.contains(&"close_agent"));
+        assert!(
+            !names.contains(&"followup_task"),
+            "deprecated followup_task must not be in the factory (§8.3)"
+        );
+        assert!(
+            !names.contains(&"wait_agent"),
+            "wait_agent must not be in the factory: results are pushed, not pulled"
+        );
     }
 }
