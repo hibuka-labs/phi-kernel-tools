@@ -14,6 +14,15 @@ use serde::{Deserialize, Serialize};
 /// needs its role stated plus a complete task; it plans by itself. Zero LLM
 /// cost, zero truncation/timeout surface on the spawn path.
 ///
+/// Session 20260904_efad759c forced the second half of the synthesis: the
+/// parent was asked to write each task as a complete self-contained brief,
+/// and 4 briefs in one response exhausted the model's output budget — the
+/// truncated spawn_agent call never executed. So the brief-writing duty
+/// moved here: the parent's `task` stays short (3-5 sentences) and the
+/// standing report format below is appended free of charge. The task
+/// carries only what is per-spawn (goal, paths, scope, focus); everything
+/// every spawn shares lives in this prompt.
+///
 /// The last paragraph is generic path discipline (no domain assumptions):
 /// children share the parent's process working directory, and session
 /// 20260904_3eeb5610 showed a child silently resolving relative paths
@@ -24,28 +33,37 @@ const CHILD_SYSTEM_PROMPT: &str = "\
 You are a focused sub-agent spawned to handle exactly one task. The task is \
 the first message you receive. Work autonomously — there is no one to ask \
 mid-task: use the available tools to gather what you need, then deliver. \
-Your final message is your deliverable: make it complete, structured, and \
-self-contained, with concrete evidence (file paths, line references, \
-measurements) for every claim. State limitations explicitly instead of \
-guessing.
+Your final message is your deliverable — the parent receives nothing else.
+
+Report format (applies unless the task specifies its own): structure the \
+final message as (1) Findings — the direct answer to the task, every claim \
+backed by concrete evidence (file paths, line references, measurements); \
+(2) Method — what you examined and what you deliberately skipped; \
+(3) Limitations — what you could not verify or complete. If the task does \
+not bound the scope, examine only what the goal requires, and record that \
+choice under Method.
 
 Path discipline: relative paths in tool calls resolve against your working \
 directory (stated below). When the task specifies an absolute path, use it \
 verbatim in tool calls. When what you observe contradicts what the task \
 describes, re-verify your location and paths before drawing conclusions.";
 
-/// Tool description, hoisted into a const so tests can guard its semantics
-/// (the same drift class that put "keep `task` one sentence" here while the
-/// expansion step it depended on no longer exists).
+/// Tool description, hoisted into a const so tests can guard its semantics.
+///
+/// Session 20260904_efad759c: "COMPLETE and self-contained" read as license
+/// for essay-length briefs; 4 of them in one response truncated the spawn
+/// call into empty args. The guidance now caps the task at 3-5 sentences —
+/// args length is the failure surface of this call — and points at the
+/// automatic role prompt + report format instead.
 const DESCRIPTION: &str = "\
 Spawn an independent sub-agent to handle a task.\n\
 Sub-agents start with NO context of this conversation and see\n\
-nothing but `task` — it must be COMPLETE and self-contained:\n\
-the goal, the full paths of anything to analyze, the scope,\n\
-and what the final report should cover (e.g. \"Analyze\n\
-/Users/me/demo/codex: map the module structure, then explain\n\
-the agent loop, tool system, and error-handling patterns;\n\
-report with file paths and line references\").\n\
+nothing but `task` (a standard role prompt and report format are\n\
+added automatically). Keep `task` SHORT — 3-5 sentences covering:\n\
+the goal, the full paths of anything to analyze, the scope, and\n\
+what the report should focus on.\n\
+Do NOT write a long detailed brief — extra prose only inflates this\n\
+tool call, which is its main truncation failure mode.\n\
 Give it a short unique name (task_name).\n\
 Omit `model` unless the user explicitly asked for a different one.";
 
@@ -53,11 +71,12 @@ Omit `model` unless the user explicitly asked for a different one.";
 pub struct SpawnAgentArgs {
     /// Unique name for this sub-agent (used in the agent path)
     pub task_name: String,
-    /// What you want the sub-agent to do. The task must be COMPLETE and
-    /// self-contained — the sub-agent starts with NO context of this
-    /// conversation (unless fork_turns is set) and sees nothing but this
-    /// text: include the goal, the full paths of anything to analyze, the
-    /// scope, and what the final report should cover.
+    /// What you want the sub-agent to do — SHORT, 3-5 sentences: the goal,
+    /// the full paths of anything to analyze, the scope, and what the
+    /// report should focus on. The sub-agent starts with NO context of
+    /// this conversation (unless fork_turns is set) and sees nothing but
+    /// this text; a standard role prompt and report format are added
+    /// automatically, so do not spell out report requirements in detail.
     pub task: String,
     /// How much of this conversation's history to give the sub-agent:
     /// `none` (default), `all`, or a number N for the last N turns.
@@ -168,8 +187,10 @@ impl TypedTool for SpawnAgentTool {
 mod spawn_prompt_guard_tests {
     //! Guards the spawn-path semantics after the Focus-expansion removal
     //! (session 20260903_d8fc41dc): the child gets a static role prompt and
-    //! a self-contained task — no LLM call, and no stale "keep `task` one
-    //! sentence" guidance that only made sense when Focus expanded it.
+    //! a short task — no LLM call. Session 20260904_efad759c settled the
+    //! task-length side: "COMPLETE and self-contained" briefs truncated the
+    //! spawn call itself, so the parent writes 3-5 sentences and the static
+    //! report format lives in CHILD_SYSTEM_PROMPT.
     //!
     //! The path-discipline assertions guard session 20260904_3eeb5610: a
     //! child analyzed the wrong directory because it resolved relative paths
@@ -216,18 +237,49 @@ mod spawn_prompt_guard_tests {
     }
 
     #[test]
-    fn description_demands_self_contained_task() {
+    fn child_prompt_carries_report_scaffold() {
+        // Session 20260904_efad759c: report structure used to be spelled out
+        // inside each parent-written task — moving it here is what lets the
+        // task stay at 3-5 sentences. All three sections must be present,
+        // plus the scope fallback for unbounded tasks.
+        for section in ["Findings", "Method", "Limitations"] {
+            assert!(
+                CHILD_SYSTEM_PROMPT.contains(section),
+                "report format must define the {section} section"
+            );
+        }
         assert!(
-            DESCRIPTION.contains("COMPLETE and self-contained"),
-            "task must be described as complete and self-contained"
+            CHILD_SYSTEM_PROMPT.contains("If the task does not bound the scope"),
+            "report format must carry the scope fallback — short tasks \
+             routinely omit explicit scope bounds"
+        );
+    }
+
+    #[test]
+    fn description_demands_short_task() {
+        assert!(
+            DESCRIPTION.contains("3-5 sentences"),
+            "task length must be capped explicitly — args length is the \
+             truncation failure surface of this call (20260904_efad759c)"
         );
         assert!(
             DESCRIPTION.contains("NO context"),
             "description must warn that the child sees nothing but the task"
         );
         assert!(
-            !DESCRIPTION.contains("one\nsentence") && !DESCRIPTION.contains("one sentence"),
-            "the one-sentence guidance belonged to the removed Focus expansion"
+            DESCRIPTION.contains("added automatically"),
+            "description must point at the automatic role prompt + report \
+             format so the model does not spell them out in `task`"
+        );
+        assert!(
+            DESCRIPTION.contains("Do NOT write a long detailed brief"),
+            "the essay-length failure mode must be named"
+        );
+        // The old regime's key phrase must not come back.
+        assert!(
+            !DESCRIPTION.contains("COMPLETE and self-contained"),
+            "self-contained-brief guidance is the truncation surface this \
+             description was rewritten to remove"
         );
     }
 }
