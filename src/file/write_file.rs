@@ -134,15 +134,19 @@ impl Tool for WriteFileTool {
             ))]);
         }
 
+        // Read existing content before overwriting (for diff display)
+        let old_content = if overwrite && file_path.exists() {
+            std::fs::read_to_string(&file_path).ok()
+        } else {
+            None
+        };
+
         // Write the file
         match std::fs::write(&file_path, &content) {
             Ok(()) => {
                 let line_count = content.lines().count();
-                let verb = if file_path.exists() && overwrite {
-                    "Updated"
-                } else {
-                    "Created"
-                };
+                let verb = if overwrite { "Updated" } else { "Created" };
+                let write_mode = if old_content.is_some() { "overwrite" } else { "create" };
 
                 tracing::info!(
                     path = %path_str,
@@ -152,13 +156,18 @@ impl Tool for WriteFileTool {
                     "write_file"
                 );
 
-                Ok(vec![Content::text(format!(
-                    "{} file: {} ({} bytes, {} lines)",
-                    verb,
-                    path_str,
-                    content.len(),
-                    line_count
-                ))])
+                let mut detail = serde_json::json!({ "write_mode": write_mode });
+                if let Some(ref old) = old_content {
+                    detail["old_content"] = serde_json::Value::String(old.clone());
+                }
+
+                Ok(vec![
+                    Content::text(format!(
+                        "{} file: {} ({} bytes, {} lines)",
+                        verb, path_str, content.len(), line_count
+                    )),
+                    Content::detail(detail),
+                ])
             }
             Err(e) => Ok(vec![Content::text(format!(
                 "[Error]: Failed to write file: {}",

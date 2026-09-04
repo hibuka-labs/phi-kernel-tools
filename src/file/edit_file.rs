@@ -181,6 +181,15 @@ impl Tool for EditFileTool {
         let mut modified = original.clone();
         let mut applied = 0;
 
+        // Compute line numbers for each edit before applying (so positions stay valid)
+        let mut edit_lines: Vec<u32> = Vec::new();
+        for edit in &edits {
+            let line = original.find(&edit.old_text)
+                .map(|pos| original[..pos].lines().count() as u32 + 1)
+                .unwrap_or(0);
+            edit_lines.push(line);
+        }
+
         for (i, edit) in edits.iter().enumerate() {
             match find_and_replace(&modified, &original, edit, i) {
                 Ok(new_content) => {
@@ -223,10 +232,10 @@ impl Tool for EditFileTool {
             "edit_file"
         );
 
-        Ok(vec![Content::text(format!(
-            "Successfully applied {} edit(s) to {}.",
-            applied, path_str
-        ))])
+        Ok(vec![
+            Content::text(format!("Successfully applied {} edit(s) to {}.", applied, path_str)),
+            Content::detail(serde_json::json!({ "edit_lines": edit_lines })),
+        ])
     }
 }
 
