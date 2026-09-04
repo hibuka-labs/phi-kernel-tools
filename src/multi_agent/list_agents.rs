@@ -8,6 +8,18 @@ use serde::{Deserialize, Serialize};
 pub struct ListAgentsArgs {}
 
 #[derive(Debug, Serialize)]
+pub struct ListAgentsOutput {
+    pub agents: Vec<ListAgentItem>,
+    /// Delivery facts the parent cannot otherwise verify. Session
+    /// 20260904_841ed65b: a mid-turn parent saw `done` children but no
+    /// reports in its context and concluded the system failed to deliver —
+    /// the reports were held for the batch. This note turns that blind
+    /// trust into a checkable fact. `None` while anyone is still working.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivery_note: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct ListAgentItem {
     pub agent_path: String,
     pub status: String,
@@ -30,6 +42,16 @@ pub struct ListAgentItem {
     /// 20260903_9255c25e: 65 polls × 4 full tasks ≈ 160KB of context).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task: Option<String>,
+    /// Reports this agent has posted that have not reached you yet — they
+    /// are held for the next batch. Zero means nothing is in flight from
+    /// this agent. A `done` agent with `pending_results > 0` needs nothing
+    /// from you: its report IS en route, ending your turn is what delivers it.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub pending_results: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Task excerpt length in characters.
@@ -58,7 +80,7 @@ impl ListAgentsTool {
 #[async_trait::async_trait]
 impl TypedTool for ListAgentsTool {
     type Args = ListAgentsArgs;
-    type Output = Vec<ListAgentItem>;
+    type Output = ListAgentsOutput;
 
     fn name(&self) -> &'static str {
         "list_agents"
@@ -69,34 +91,70 @@ impl TypedTool for ListAgentsTool {
          Spot-check tool ONLY: call it at most once to see what each agent is\n\
          doing. NEVER poll it and NEVER use it to wait — when every sub-agent\n\
          has finished, their full reports are pushed to you automatically in\n\
-         one message. A single snapshot is not evidence of a stall, and a\n\
-         `done` status means the result is already en route to you. Repeated\n\
-         calls are pure token burn and change nothing.\n\
-         Status: queued (task accepted, waiting in its queue — its result\n\
-         will arrive with the batch), running (executing; `running_secs` =\n\
-         seconds in the current task), done (result delivered, or arriving\n\
-         with the next batch)."
+         one message at the END of your turn. A single snapshot is not\n\
+         evidence of a stall. `pending_results` is the delivery fact: it\n\
+         counts reports that exist but are still held for the batch. A\n\
+         `done` agent with `pending_results > 0` is completely healthy —\n\
+         its report IS en route, and ending your turn is what delivers it.\n\
+         Repeated calls are pure token burn and change nothing.\n\
+         Status: queued (task accepted, waiting in its queue), running\n\
+         (executing; `running_secs` = seconds in the current task), done\n\
+         (no work left — check `pending_results` for delivery)."
     }
 
     async fn call_typed(&self, _args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
         let agents = self.runtime.list_agents();
-        Ok(agents
-            .into_iter()
-            .map(|a| ListAgentItem {
-                agent_path: a.agent_path,
-                status: a.status,
-                tool_calls: a.tool_calls,
-                running_secs: a.running_secs,
-                last_activity_secs: a.last_activity_secs,
-                task: a.task.as_deref().map(task_excerpt),
-            })
-            .collect())
+        let total_pending: usize = agents.iter().map(|a| a.pending_results).sum();
+        let busy = agents
+            .iter()
+            .any(|a| a.status == "running" || a.status == "queued");
+        let delivery_note = delivery_note(total_pending, busy, agents.len());
+        Ok(ListAgentsOutput {
+            agents: agents
+                .into_iter()
+                .map(|a| ListAgentItem {
+                    agent_path: a.agent_path,
+                    status: a.status,
+                    tool_calls: a.tool_calls,
+                    running_secs: a.running_secs,
+                    last_activity_secs: a.last_activity_secs,
+                    task: a.task.as_deref().map(task_excerpt),
+                    pending_results: a.pending_results,
+                })
+                .collect(),
+            delivery_note,
+        })
+    }
+}
+
+/// Delivery facts for the mid-turn parent. Session 20260904_841ed65b: a
+/// parent watching `done` statuses with no reports in context concluded
+/// "the system didn't deliver" — the reports were batch-held by design.
+/// These notes make the hold visible and name the one action that
+/// releases it: ending the turn.
+fn delivery_note(total_pending: usize, busy: bool, agent_count: usize) -> Option<String> {
+    if agent_count == 0 || total_pending == 0 {
+        return None;
+    }
+    if busy {
+        Some(format!(
+            "{total_pending} finished report(s) are held for the batch while the \
+             remaining agent(s) work. Waiting is passive: end your turn and the \
+             batch will wake you with everything. Do NOT poll and do NOT redo \
+             their work."
+        ))
+    } else {
+        Some(format!(
+            "All {total_pending} finished report(s) are ready and held for the \
+             batch. End your turn NOW to receive them. Do NOT poll and do NOT \
+             redo their work."
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::task_excerpt;
+    use super::{delivery_note, task_excerpt};
 
     #[test]
     fn excerpt_truncates_long_first_line_with_ellipsis() {
@@ -116,5 +174,40 @@ mod tests {
     fn excerpt_uses_first_line_only() {
         let out = task_excerpt("第一行\n第二行不该出现");
         assert_eq!(out, "第一行");
+    }
+
+    #[test]
+    fn note_is_silent_without_agents_or_without_pending() {
+        assert_eq!(delivery_note(0, false, 0), None, "nothing spawned");
+        assert_eq!(
+            delivery_note(0, false, 3),
+            None,
+            "agents exist, nothing undelivered"
+        );
+        assert_eq!(
+            delivery_note(0, true, 3),
+            None,
+            "still working, nothing finished yet"
+        );
+    }
+
+    #[test]
+    fn note_all_done_tells_the_parent_to_end_its_turn() {
+        // The exact 841ed65b shape: everyone reads `done`, reports are held
+        // for the batch, and the parent needs to be told delivery is normal
+        // and that ending the turn releases it.
+        let note = delivery_note(4, false, 4).expect("note expected");
+        assert!(note.contains("4 finished report(s)"));
+        assert!(note.contains("End your turn NOW"));
+        assert!(note.contains("Do NOT poll"));
+        assert!(note.contains("NOT redo"));
+    }
+
+    #[test]
+    fn note_partial_delivery_says_waiting_is_passive() {
+        let note = delivery_note(2, true, 4).expect("note expected");
+        assert!(note.contains("2 finished report(s)"));
+        assert!(note.contains("Waiting is passive"));
+        assert!(note.contains("end your turn"));
     }
 }

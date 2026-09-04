@@ -25,7 +25,7 @@ mod spawn_agent;
 pub use close_agent::{CloseAgentArgs, CloseAgentOutput, CloseAgentTool};
 #[allow(deprecated)]
 pub use followup_task::{FollowupTaskArgs, FollowupTaskOutput, FollowupTaskTool};
-pub use list_agents::{ListAgentItem, ListAgentsArgs, ListAgentsTool};
+pub use list_agents::{ListAgentItem, ListAgentsArgs, ListAgentsOutput, ListAgentsTool};
 pub use send_message::{SendMessageArgs, SendMessageOutput, SendMessageTool};
 pub use spawn_agent::{SpawnAgentArgs, SpawnAgentOutput, SpawnAgentTool};
 
@@ -200,7 +200,14 @@ mod tests {
     fn test_list_agents_tool_metadata() {
         let t = ListAgentsTool::new(make_runtime());
         assert_eq!(agent_base::TypedTool::name(&t), "list_agents");
-        assert!(!agent_base::TypedTool::description(&t).is_empty());
+        let d = agent_base::TypedTool::description(&t);
+        assert!(!d.is_empty());
+        // Delivery-fact guard (session 20260904_841ed65b): the description
+        // must name `pending_results`, ban polling, and tell the parent
+        // that ending the turn is what delivers held reports.
+        assert!(d.contains("pending_results"), "{d}");
+        assert!(d.contains("NEVER poll"), "{d}");
+        assert!(d.contains("ending your turn is what delivers"), "{d}");
         let schema = t.schema();
         assert_eq!(schema["type"], "object");
     }
@@ -277,7 +284,8 @@ mod tests {
         let t = ListAgentsTool::new(rt);
         let ctx = make_tool_ctx();
         let result = t.call_typed(ListAgentsArgs {}, &ctx).await.unwrap();
-        assert!(result.is_empty());
+        assert!(result.agents.is_empty());
+        assert_eq!(result.delivery_note, None);
     }
 
     #[tokio::test]
@@ -429,8 +437,11 @@ mod tests {
         // Verify the agent shows up in list
         let t2 = ListAgentsTool::new(rt);
         let list = t2.call_typed(ListAgentsArgs {}, &ctx).await.unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].agent_path, "root/helper");
+        assert_eq!(list.agents.len(), 1);
+        assert_eq!(list.agents[0].agent_path, "root/helper");
+        // A fresh spawn has posted nothing → no pending delivery, no note.
+        assert_eq!(list.agents[0].pending_results, 0);
+        assert_eq!(list.delivery_note, None);
     }
 
     // ── spawn limit exceeded → Err (B5: no more fake-Ok) ──
