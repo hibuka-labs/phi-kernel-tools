@@ -165,15 +165,40 @@ impl TypedTool for SpawnAgentTool {
             .await
         {
             Ok(agent_path) => {
-                let _ = self
-                    .runtime
-                    .send_task(&agent_path, message, true);
-                // TODO(layer-3): args.model is accepted but inert until
-                // request-level model routing lands (see SpawnAgentArgs::model).
-                Ok(SpawnAgentOutput {
-                    agent_path,
-                    message: "Agent spawned successfully".to_string(),
-                })
+                // The initial task IS the spawn's purpose. A failed delivery
+                // must not be swallowed: the child would sit registered with
+                // zero deliveries, which permanently blocks the runtime's
+                // quiescence (the fan-in batch can never fire), and the
+                // parent would wait forever for a result that was promised.
+                // Close the orphan and report the truth instead.
+                match self.runtime.send_task(&agent_path, message, true) {
+                    Ok(true) => {
+                        // TODO(layer-3): args.model is accepted but inert
+                        // until request-level model routing lands (see
+                        // SpawnAgentArgs::model).
+                        Ok(SpawnAgentOutput {
+                            agent_path,
+                            message: "Agent spawned successfully".to_string(),
+                        })
+                    }
+                    Ok(false) | Err(_) => {
+                        // Best effort: a close failure here means the
+                        // runtime is tearing down anyway; the caller cannot
+                        // use the agent either way.
+                        let close_err = self.runtime.close_agent(&agent_path).err();
+                        let why = close_err
+                            .map(|e| format!(" (cleanup also failed: {})", e))
+                            .unwrap_or_default();
+                        Ok(SpawnAgentOutput {
+                            agent_path: String::new(),
+                            message: format!(
+                                "Agent spawned but task delivery failed, agent \
+                                 closed. Retry spawn if needed{}",
+                                why
+                            ),
+                        })
+                    }
+                }
             }
             Err(e) => Ok(SpawnAgentOutput {
                 agent_path: String::new(),
