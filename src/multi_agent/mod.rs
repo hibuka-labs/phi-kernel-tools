@@ -261,7 +261,7 @@ mod tests {
         let t = CloseAgentTool::new(make_runtime());
         let out = t.format_output(CloseAgentOutput {
             closed: true,
-            previous_status: "idle".into(),
+            previous_status: "done".into(),
             message: "done".into(),
         });
         let text = agent_base::tool::content_text(&[out]);

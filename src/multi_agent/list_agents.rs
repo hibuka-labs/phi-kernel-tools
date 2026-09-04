@@ -15,6 +15,11 @@ pub struct ListAgentItem {
     /// it works). A frozen count with a stale `last_activity_secs` — not a
     /// low count — is the stall signal.
     pub tool_calls: usize,
+    /// Seconds spent in the current task; present only while `running`.
+    /// Feeds the framework's stall reaper, and lets the parent read "how
+    /// long has it been at this" without polling twice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub running_secs: Option<u64>,
     /// Seconds since the agent's last activity (task start or tool call);
     /// absent until the agent receives its first task.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,8 +72,10 @@ impl TypedTool for ListAgentsTool {
          one message. A single snapshot is not evidence of a stall, and a\n\
          `done` status means the result is already en route to you. Repeated\n\
          calls are pure token burn and change nothing.\n\
-         Status: idle (ready), running (executing), done (completed, result\n\
-         pending delivery)."
+         Status: queued (task accepted, waiting in its queue — its result\n\
+         will arrive with the batch), running (executing; `running_secs` =\n\
+         seconds in the current task), done (result delivered, or arriving\n\
+         with the next batch)."
     }
 
     async fn call_typed(&self, _args: Self::Args, _ctx: &ToolContext) -> AgentResult<Self::Output> {
@@ -79,6 +86,7 @@ impl TypedTool for ListAgentsTool {
                 agent_path: a.agent_path,
                 status: a.status,
                 tool_calls: a.tool_calls,
+                running_secs: a.running_secs,
                 last_activity_secs: a.last_activity_secs,
                 task: a.task.as_deref().map(task_excerpt),
             })
