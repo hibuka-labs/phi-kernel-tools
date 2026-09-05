@@ -146,7 +146,11 @@ impl Tool for WriteFileTool {
             Ok(()) => {
                 let line_count = content.lines().count();
                 let verb = if overwrite { "Updated" } else { "Created" };
-                let write_mode = if old_content.is_some() { "overwrite" } else { "create" };
+                let write_mode = if old_content.is_some() {
+                    "overwrite"
+                } else {
+                    "create"
+                };
 
                 tracing::info!(
                     path = %path_str,
@@ -164,7 +168,10 @@ impl Tool for WriteFileTool {
                 Ok(vec![
                     Content::text(format!(
                         "{} file: {} ({} bytes, {} lines)",
-                        verb, path_str, content.len(), line_count
+                        verb,
+                        path_str,
+                        content.len(),
+                        line_count
                     )),
                     Content::detail(detail),
                 ])

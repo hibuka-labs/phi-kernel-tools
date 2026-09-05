@@ -352,7 +352,7 @@ mod tests {
 
         // Spawn a child first
         let path = rt
-            .spawn_child("worker", "you are a worker".into() , 1, false, vec![])
+            .spawn_child("worker", "you are a worker".into(), 1, false, vec![])
             .await
             .unwrap();
 
@@ -482,8 +482,7 @@ mod tests {
             .await
             .expect("second spawn call resolves");
         assert!(
-            result.agent_path.is_empty()
-                && result.message.contains("max agents reached"),
+            result.agent_path.is_empty() && result.message.contains("max agents reached"),
             "second spawn must report the limit failure, got: {result:?}"
         );
     }

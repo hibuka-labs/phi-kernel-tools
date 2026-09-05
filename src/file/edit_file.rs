@@ -184,7 +184,8 @@ impl Tool for EditFileTool {
         // Compute line numbers for each edit before applying (so positions stay valid)
         let mut edit_lines: Vec<u32> = Vec::new();
         for edit in &edits {
-            let line = original.find(&edit.old_text)
+            let line = original
+                .find(&edit.old_text)
                 .map(|pos| original[..pos].lines().count() as u32 + 1)
                 .unwrap_or(0);
             edit_lines.push(line);
@@ -233,7 +234,10 @@ impl Tool for EditFileTool {
         );
 
         Ok(vec![
-            Content::text(format!("Successfully applied {} edit(s) to {}.", applied, path_str)),
+            Content::text(format!(
+                "Successfully applied {} edit(s) to {}.",
+                applied, path_str
+            )),
             Content::detail(serde_json::json!({ "edit_lines": edit_lines })),
         ])
     }

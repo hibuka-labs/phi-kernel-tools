@@ -92,7 +92,8 @@ fn registered_tool_names(runtime: &agent_base::AgentRuntime) -> Vec<String> {
 #[cfg(feature = "multi-agent")]
 async fn test_inject_multi_agent_tools_via_factory() {
     let client = make_client();
-    let factory: MultiAgentToolFactory = Arc::new(move |rt| multi_agent::create_all_tools(rt, std::env::current_dir().unwrap()));
+    let factory: MultiAgentToolFactory =
+        Arc::new(move |rt| multi_agent::create_all_tools(rt, std::env::current_dir().unwrap()));
 
     let runtime = AgentBuilder::new(client)
         .with_multi_agent(MultiAgentConfig::enabled())
@@ -233,7 +234,8 @@ async fn phimint_legacy_wire_shape_spawns_end_to_end() {
 #[cfg(feature = "multi-agent")]
 async fn test_multi_agent_disabled_does_not_register_tools() {
     let client = make_client();
-    let factory: MultiAgentToolFactory = Arc::new(move |rt| multi_agent::create_all_tools(rt, std::env::current_dir().unwrap()));
+    let factory: MultiAgentToolFactory =
+        Arc::new(move |rt| multi_agent::create_all_tools(rt, std::env::current_dir().unwrap()));
 
     // Default config has enabled=false
     let runtime = AgentBuilder::new(client)

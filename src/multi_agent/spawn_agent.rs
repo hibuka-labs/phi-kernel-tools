@@ -249,7 +249,8 @@ mod spawn_prompt_guard_tests {
             "task absolute paths must be mandated verbatim"
         );
         assert!(
-            CHILD_SYSTEM_PROMPT.contains("re-verify your location and paths before drawing conclusions"),
+            CHILD_SYSTEM_PROMPT
+                .contains("re-verify your location and paths before drawing conclusions"),
             "observation/task contradictions must trigger a path re-check, \
              not a rationalization (session 20260904_3eeb5610)"
         );
