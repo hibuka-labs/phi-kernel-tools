@@ -4,6 +4,7 @@
 //! with agent-works infrastructure:
 //!
 //! - **file**: read_file, write_file, list_files
+//! - **context_rotation**: notes, history, handoff (context window management)
 //! - **multi-agent**: spawn, send_message, followup_task, wait, list, close
 //! - **shell**: execute_command
 //!
@@ -15,6 +16,7 @@
 //! | Feature | Tools provided |
 //! |---------|---------------|
 //! | `file` | ReadFileTool, WriteFileTool, ListFilesTool |
+//! | `context_rotation` | NotesStore, HistoryStore, extract_ledger + 9 LLM tools |
 //! | `multi-agent` | 6 multi-agent tools |
 //! | `shell` | LocalShellTool |
 //!
@@ -22,6 +24,9 @@
 
 #[cfg(feature = "file")]
 pub mod file;
+
+#[cfg(feature = "context")]
+pub mod context_rotation;
 
 #[cfg(feature = "multi-agent")]
 pub mod multi_agent;

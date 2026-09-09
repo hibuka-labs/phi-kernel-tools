@@ -10,16 +10,18 @@ categories = ["development-tools", "asynchronous"]
 
 [features]
 default = []
-full = ["multi-agent", "shell", "file"]
+full = ["multi-agent", "shell", "file", "context"]
 file = []
 multi-agent = []
 shell = []
+context = []
 fuzzing = ["file"]
 
 [dependencies]
-agent-base = { version = "0.5.0" }
-agent-works = { version = "0.6.0", features = ["multi_agent"] }
+agent-base = { version = "0.5.0", path = "../agent-base" }
+agent-works = { version = "0.6.0", features = ["multi_agent"], path = "../agent-works" }
 async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
 ignore = "0.4"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
