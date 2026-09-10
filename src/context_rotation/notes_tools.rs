@@ -38,7 +38,7 @@ impl Tool for NotesListFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "List note files. This is your private scratchpad — never show to the user. Use prefix to narrow results."
+        "List private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
     }
 
     fn schema(&self) -> Value {
@@ -108,7 +108,7 @@ impl Tool for NotesReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read a note file. This is your private scratchpad — never show to the user. Supports line range for large files."
+        "Read private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
     }
 
     fn schema(&self) -> Value {
@@ -183,7 +183,7 @@ impl Tool for NotesSearchContentsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Search note file contents. Case-insensitive substring match. Returns matching lines with file paths."
+        "Search private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
     }
 
     fn schema(&self) -> Value {
@@ -283,7 +283,7 @@ impl Tool for NotesAppendToFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Append content to a note file (creates if missing). This is your private scratchpad — never show to the user. Max 1MB per file."
+        "Append to private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
     }
 
     fn schema(&self) -> Value {
@@ -353,7 +353,7 @@ impl Tool for NotesWriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Create or overwrite a note file. This is your private scratchpad — never show to the user. Max 1MB per file. Use append_to_file to add to existing files."
+        "Create or replace private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
     }
 
     fn schema(&self) -> Value {
