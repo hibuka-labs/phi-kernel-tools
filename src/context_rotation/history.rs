@@ -274,10 +274,10 @@ impl HistoryStore {
                 Err(_) => continue,
             };
             for rec in records {
-                if let Some(r) = role {
-                    if rec.role != r {
-                        continue;
-                    }
+                if let Some(r) = role
+                    && rec.role != r
+                {
+                    continue;
                 }
                 if let Some(tn) = tool_name {
                     match &rec.name {
@@ -354,10 +354,10 @@ impl HistoryStore {
                 Err(_) => continue,
             };
             for rec in records {
-                if let Some(r) = role {
-                    if rec.role != r {
-                        continue;
-                    }
+                if let Some(r) = role
+                    && rec.role != r
+                {
+                    continue;
                 }
                 if !rec.content.to_lowercase().contains(&query_lower) {
                     continue;

@@ -54,10 +54,10 @@ pub fn extract_ledger(messages: &[ChatMessage]) -> Option<String> {
             }
             if let Some(calls) = tool_calls {
                 for call in calls {
-                    if let Some(entry) = ledger_entry(&call.name, &call.arguments) {
-                        if !entries.contains(&entry) {
-                            entries.push(entry);
-                        }
+                    if let Some(entry) = ledger_entry(&call.name, &call.arguments)
+                        && !entries.contains(&entry)
+                    {
+                        entries.push(entry);
                     }
                 }
             }

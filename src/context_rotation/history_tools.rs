@@ -802,7 +802,7 @@ mod tests {
         // Add more windows to stress the concurrent reads
         for i in 2..=5 {
             store
-                .archive_window(i, &[ChatMessage::user(&format!("window{i} msg"))])
+                .archive_window(i, &[ChatMessage::user(format!("window{i} msg"))])
                 .unwrap();
         }
 
@@ -836,7 +836,7 @@ mod tests {
         let store = setup_store(&tmp);
         for i in 2..=3 {
             store
-                .archive_window(i, &[ChatMessage::user(&format!("w{i}"))])
+                .archive_window(i, &[ChatMessage::user(format!("w{i}"))])
                 .unwrap();
         }
 

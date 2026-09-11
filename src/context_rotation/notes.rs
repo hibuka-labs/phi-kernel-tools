@@ -191,12 +191,11 @@ impl NotesStore {
             let path = entry.path();
             if path.is_dir() {
                 self.walk_dir(&path, root, files, max);
-            } else if path.is_file() {
-                if let Ok(relative) = path.strip_prefix(root) {
-                    if let Some(s) = relative.to_str() {
-                        files.push(s.to_string());
-                    }
-                }
+            } else if path.is_file()
+                && let Ok(relative) = path.strip_prefix(root)
+                && let Some(s) = relative.to_str()
+            {
+                files.push(s.to_string());
             }
         }
     }
