@@ -60,9 +60,7 @@ fn message_content(msg: &ChatMessage) -> String {
     match msg {
         ChatMessage::System { content, .. } => content.clone(),
         ChatMessage::User { content, .. } => content.clone(),
-        ChatMessage::Assistant { content, .. } => {
-            content.clone().unwrap_or_default()
-        }
+        ChatMessage::Assistant { content, .. } => content.clone().unwrap_or_default(),
         ChatMessage::Tool { content, .. } => content.clone(),
         ChatMessage::Custom { data, .. } => data.to_string(),
     }
@@ -563,11 +561,7 @@ mod tests {
         let hint_dir = tmp.path().join("notes").join("s1").join("agent");
         fs::create_dir_all(&hint_dir).unwrap();
         // Write 5KB (exceeds 4KB limit)
-        fs::write(
-            hint_dir.join("thread_hint.md"),
-            "x".repeat(5000),
-        )
-        .unwrap();
+        fs::write(hint_dir.join("thread_hint.md"), "x".repeat(5000)).unwrap();
 
         let hint = read_thread_hint(tmp.path(), "s1", "agent");
         assert!(hint.is_none());

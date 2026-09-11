@@ -84,9 +84,7 @@ pub fn extract_ledger(messages: &[ChatMessage]) -> Option<String> {
         out.push_str(&text);
         out.push('\n');
     }
-    out.push_str(
-        "Continue from here; re-read a file only for details this ledger lacks.\n",
-    );
+    out.push_str("Continue from here; re-read a file only for details this ledger lacks.\n");
     out.push_str("</activity_ledger>");
 
     // Pathological growth guard (a 1200-char ledger is ~400 tokens).
@@ -145,18 +143,22 @@ fn ledger_entry(tool: &str, args_json: &str) -> Option<String> {
             str_field(&args, "path").map(|p| format!("note {p}"))?
         }
         // Private context-management churn — not work.
-        "history.list_windows" | "history.list_items" | "history.read_item"
+        "history.list_windows"
+        | "history.list_items"
+        | "history.read_item"
         | "history.search_contents"
-        | "notes.list_files" | "notes.read_file" | "notes.search_contents" => {
+        | "notes.list_files"
+        | "notes.read_file"
+        | "notes.search_contents" => {
             return None;
         }
         // Unknown work tool: record the name plus its first string argument
         // (good enough to identify the call; keeps the ledger future-proof).
         _ => {
             let args = parse(args_json)?;
-            let first = args.as_object().and_then(|o| {
-                o.values().find_map(|v| v.as_str())
-            });
+            let first = args
+                .as_object()
+                .and_then(|o| o.values().find_map(|v| v.as_str()));
             match first {
                 Some(v) => format!("{tool} {}", truncate_chars(&one_line(v), 40)),
                 None => tool.to_string(),
@@ -232,15 +234,22 @@ mod tests {
 
     #[test]
     fn extracts_work_actions_in_order() {
-        let msgs = vec![
-            assistant("我先看结构。", vec![
+        let msgs = vec![assistant(
+            "我先看结构。",
+            vec![
                 call("repo_map", serde_json::json!({})),
                 call("read_file", serde_json::json!({"path": "README.md"})),
-                call("read_file", serde_json::json!({"path": "src/main.rs", "offset": 10, "limit": 50})),
-                call("execute_command", serde_json::json!({"command": "cargo test --lib"})),
+                call(
+                    "read_file",
+                    serde_json::json!({"path": "src/main.rs", "offset": 10, "limit": 50}),
+                ),
+                call(
+                    "execute_command",
+                    serde_json::json!({"command": "cargo test --lib"}),
+                ),
                 call("edit_file", serde_json::json!({"path": "src/lib.rs"})),
-            ]),
-        ];
+            ],
+        )];
         let ledger = extract_ledger(&msgs).unwrap();
         assert!(ledger.contains("<activity_ledger>"));
         assert!(ledger.contains("- mapped repo structure"));
@@ -253,30 +262,43 @@ mod tests {
 
     #[test]
     fn excludes_context_management_churn() {
-        let msgs = vec![assistant("", vec![
-            call("history.list_windows", serde_json::json!({})),
-            call("notes.list_files", serde_json::json!({})),
-            call("notes.read_file", serde_json::json!({"path": "thread_hint.md"})),
-        ])];
+        let msgs = vec![assistant(
+            "",
+            vec![
+                call("history.list_windows", serde_json::json!({})),
+                call("notes.list_files", serde_json::json!({})),
+                call(
+                    "notes.read_file",
+                    serde_json::json!({"path": "thread_hint.md"}),
+                ),
+            ],
+        )];
         assert!(extract_ledger(&msgs).is_none());
     }
 
     #[test]
     fn notes_writes_are_recorded() {
-        let msgs = vec![assistant("", vec![
-            call("notes.write_file", serde_json::json!({"path": "thread_hint.md", "content": "..."})),
-        ])];
+        let msgs = vec![assistant(
+            "",
+            vec![call(
+                "notes.write_file",
+                serde_json::json!({"path": "thread_hint.md", "content": "..."}),
+            )],
+        )];
         let ledger = extract_ledger(&msgs).unwrap();
         assert!(ledger.contains("- note thread_hint.md"));
     }
 
     #[test]
     fn dedups_repeated_reads() {
-        let msgs = vec![assistant("", vec![
-            call("read_file", serde_json::json!({"path": "README.md"})),
-            call("read_file", serde_json::json!({"path": "README.md"})),
-            call("read_file", serde_json::json!({"path": "src/lib.rs"})),
-        ])];
+        let msgs = vec![assistant(
+            "",
+            vec![
+                call("read_file", serde_json::json!({"path": "README.md"})),
+                call("read_file", serde_json::json!({"path": "README.md"})),
+                call("read_file", serde_json::json!({"path": "src/lib.rs"})),
+            ],
+        )];
         let ledger = extract_ledger(&msgs).unwrap();
         assert_eq!(ledger.matches("- read README.md").count(), 1);
         assert!(ledger.contains("- read src/lib.rs"));
@@ -303,11 +325,13 @@ mod tests {
     fn long_command_and_narration_are_truncated() {
         let long_cmd = "x".repeat(300);
         let long_text = "思".repeat(300);
-        let msgs = vec![
-            assistant(&long_text, vec![
-                call("execute_command", serde_json::json!({"command": long_cmd})),
-            ]),
-        ];
+        let msgs = vec![assistant(
+            &long_text,
+            vec![call(
+                "execute_command",
+                serde_json::json!({"command": long_cmd}),
+            )],
+        )];
         let ledger = extract_ledger(&msgs).unwrap();
         assert!(ledger.contains("..."));
         assert!(ledger.chars().count() < 1000);
@@ -315,21 +339,26 @@ mod tests {
 
     #[test]
     fn unknown_tool_falls_back_to_name_and_first_arg() {
-        let msgs = vec![assistant("", vec![
-            call("future_tool", serde_json::json!({"target": "something", "n": 3})),
-        ])];
+        let msgs = vec![assistant(
+            "",
+            vec![call(
+                "future_tool",
+                serde_json::json!({"target": "something", "n": 3}),
+            )],
+        )];
         let ledger = extract_ledger(&msgs).unwrap();
         assert!(ledger.contains("- future_tool something"));
     }
 
     #[test]
     fn spawn_agent_uses_task_name() {
-        let msgs = vec![assistant("", vec![
-            call(
+        let msgs = vec![assistant(
+            "",
+            vec![call(
                 "spawn_agent",
                 serde_json::json!({"task_name": "analyzer", "task": "read the code"}),
-            ),
-        ])];
+            )],
+        )];
         let ledger = extract_ledger(&msgs).unwrap();
         assert!(ledger.contains("- spawned sub-agent analyzer"));
     }

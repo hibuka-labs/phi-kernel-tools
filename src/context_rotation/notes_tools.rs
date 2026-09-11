@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use agent_base::{AgentResult, Content, Tool, ToolContext, ToolMetadata};
+use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::notes::NotesStore;
@@ -224,21 +224,21 @@ impl Tool for NotesSearchContentsTool {
     async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let query = match args.get("query").and_then(Value::as_str) {
             Some(q) => q.trim(),
-            None => return Ok(vec![Content::text("[Error]: query is required".to_string())]),
+            None => {
+                return Ok(vec![Content::text(
+                    "[Error]: query is required".to_string(),
+                )]);
+            }
         };
         if query.is_empty() {
-            return Ok(vec![Content::text("[Error]: query cannot be empty".to_string())]);
+            return Ok(vec![Content::text(
+                "[Error]: query cannot be empty".to_string(),
+            )]);
         }
 
         let prefix = args.get("prefix").and_then(Value::as_str);
-        let max_files = args
-            .get("max_files")
-            .and_then(Value::as_u64)
-            .unwrap_or(20) as usize;
-        let max_matches = args
-            .get("max_matches")
-            .and_then(Value::as_u64)
-            .unwrap_or(5) as usize;
+        let max_files = args.get("max_files").and_then(Value::as_u64).unwrap_or(20) as usize;
+        let max_matches = args.get("max_matches").and_then(Value::as_u64).unwrap_or(5) as usize;
 
         let results = self
             .store
@@ -324,10 +324,7 @@ impl Tool for NotesAppendToFileTool {
         };
 
         match self.store.append_to_file(path, text) {
-            Ok(()) => Ok(vec![Content::text(format!(
-                "Appended to {}",
-                path
-            ))]),
+            Ok(()) => Ok(vec![Content::text(format!("Appended to {}", path))]),
             Err(e) => Ok(vec![Content::text(format!("[Error]: {}", e))]),
         }
     }
@@ -436,8 +433,12 @@ mod tests {
 
     fn setup_store(tmp: &TempDir) -> Arc<NotesStore> {
         let store = Arc::new(NotesStore::new(tmp.path(), "test", "main"));
-        store.write_file("progress.md", "task 1 done\ntask 2 pending").unwrap();
-        store.write_file("findings.md", "found a bug in login").unwrap();
+        store
+            .write_file("progress.md", "task 1 done\ntask 2 pending")
+            .unwrap();
+        store
+            .write_file("findings.md", "found a bug in login")
+            .unwrap();
         store
     }
 
@@ -515,10 +516,7 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = NotesSearchContentsTool::new(store);
 
-        let out = tool
-            .call(&json!({"query": "bug"}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"query": "bug"}), &ctx()).await.unwrap();
         let t = text(&out);
         assert!(t.contains("findings.md"));
         assert!(t.contains("found a bug"));
@@ -530,10 +528,7 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = NotesSearchContentsTool::new(store);
 
-        let out = tool
-            .call(&json!({"query": "BUG"}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"query": "BUG"}), &ctx()).await.unwrap();
         assert!(text(&out).contains("bug"));
     }
 
@@ -566,9 +561,12 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = NotesWriteFileTool::new(Arc::clone(&store));
 
-        tool.call(&json!({"path": "progress.md", "text": "overwritten"}), &ctx())
-            .await
-            .unwrap();
+        tool.call(
+            &json!({"path": "progress.md", "text": "overwritten"}),
+            &ctx(),
+        )
+        .await
+        .unwrap();
 
         let read_tool = NotesReadFileTool::new(store);
         let out = read_tool

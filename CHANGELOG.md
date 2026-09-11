@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-11
+
+### Added
+- **Context-rotation tools**: `notes_write`, `notes_read`, `handoff_write` —
+  file-backed note and handoff tools for context-rotation workflows.
+- Tool descriptions aligned with Codex style conventions.
+
+### Changed
+- Tool descriptions refactored for clarity and consistency.
+
 ## [0.6.0] - 2026-09-06
 
 ### Added

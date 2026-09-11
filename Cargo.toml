@@ -1,6 +1,6 @@
 [package]
 name = "phi-kernel-tools"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 description = "Kernel tools for phi-agent — file system, multi-agent, and shell tools"
 license = "MIT"
@@ -18,8 +18,8 @@ context = []
 fuzzing = ["file"]
 
 [dependencies]
-agent-base = { version = "0.5.0", path = "../agent-base" }
-agent-works = { version = "0.6.0", features = ["multi_agent"], path = "../agent-works" }
+agent-base = { version = "0.6.0" }
+agent-works = { version = "0.7.0", features = ["multi_agent"] }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 ignore = "0.4"

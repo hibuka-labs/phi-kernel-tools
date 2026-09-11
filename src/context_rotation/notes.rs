@@ -92,11 +92,9 @@ impl NotesStore {
         }
         let full_path = self.resolve(path)?;
         if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create directory: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("failed to create directory: {}", e))?;
         }
-        fs::write(&full_path, content)
-            .map_err(|e| format!("failed to write file: {}", e))?;
+        fs::write(&full_path, content).map_err(|e| format!("failed to write file: {}", e))?;
         Ok(())
     }
 
@@ -121,8 +119,7 @@ impl NotesStore {
         }
 
         if let Some(parent) = full_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create directory: {}", e))?;
+            fs::create_dir_all(parent).map_err(|e| format!("failed to create directory: {}", e))?;
         }
 
         let mut file = fs::OpenOptions::new()
@@ -144,8 +141,8 @@ impl NotesStore {
         stop_line: Option<usize>,
     ) -> Result<String, String> {
         let full_path = self.resolve(path)?;
-        let content = fs::read_to_string(&full_path)
-            .map_err(|e| format!("failed to read file: {}", e))?;
+        let content =
+            fs::read_to_string(&full_path).map_err(|e| format!("failed to read file: {}", e))?;
 
         if start_line.is_none() && stop_line.is_none() {
             return Ok(content);
@@ -398,7 +395,10 @@ mod tests {
         let s = store(&tmp);
         s.write_file("lines.md", "a\nb\nc\nd\ne").unwrap();
 
-        assert_eq!(s.read_file("lines.md", Some(2), Some(4)).unwrap(), "b\nc\nd");
+        assert_eq!(
+            s.read_file("lines.md", Some(2), Some(4)).unwrap(),
+            "b\nc\nd"
+        );
         assert_eq!(s.read_file("lines.md", Some(1), Some(1)).unwrap(), "a");
         assert_eq!(s.read_file("lines.md", Some(5), None).unwrap(), "e");
         assert_eq!(s.read_file("lines.md", None, Some(3)).unwrap(), "a\nb\nc");
@@ -459,7 +459,8 @@ mod tests {
     fn search_finds_match() {
         let tmp = TempDir::new().unwrap();
         let s = store(&tmp);
-        s.write_file("progress.md", "found the needle\nother line").unwrap();
+        s.write_file("progress.md", "found the needle\nother line")
+            .unwrap();
 
         let results = s.search_contents("needle", None, 100, 10);
         assert_eq!(results.len(), 1);

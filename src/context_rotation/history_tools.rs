@@ -12,8 +12,8 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use agent_base::{AgentResult, Content, Tool, ToolContext, ToolMetadata};
+use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::history::HistoryStore;
@@ -107,7 +107,9 @@ impl Tool for HistoryListWindowsTool {
         windows.truncate(limit);
 
         if windows.is_empty() {
-            return Ok(vec![Content::text("No archived windows found.".to_string())]);
+            return Ok(vec![Content::text(
+                "No archived windows found.".to_string(),
+            )]);
         }
 
         let mut output = String::from("Archived context windows:\n");
@@ -118,7 +120,10 @@ impl Tool for HistoryListWindowsTool {
             ));
         }
 
-        Ok(vec![Content::text(truncate_to_tokens(&output, MAX_OUTPUT_TOKENS))])
+        Ok(vec![Content::text(truncate_to_tokens(
+            &output,
+            MAX_OUTPUT_TOKENS,
+        ))])
     }
 }
 
@@ -184,7 +189,10 @@ impl Tool for HistoryListItemsTool {
     }
 
     async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
-        let window_id = args.get("window_id").and_then(Value::as_u64).map(|v| v as usize);
+        let window_id = args
+            .get("window_id")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize);
         let role = args.get("role").and_then(Value::as_str);
         let tool_name = args.get("tool_name").and_then(Value::as_str);
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(50) as usize;
@@ -193,10 +201,14 @@ impl Tool for HistoryListItemsTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
-        let items = self.store.list_items(window_id, role, tool_name, limit, recent_first);
+        let items = self
+            .store
+            .list_items(window_id, role, tool_name, limit, recent_first);
 
         if items.is_empty() {
-            return Ok(vec![Content::text("No matching messages found.".to_string())]);
+            return Ok(vec![Content::text(
+                "No matching messages found.".to_string(),
+            )]);
         }
 
         let mut output = String::new();
@@ -212,7 +224,10 @@ impl Tool for HistoryListItemsTool {
             ));
         }
 
-        Ok(vec![Content::text(truncate_to_tokens(&output, MAX_OUTPUT_TOKENS))])
+        Ok(vec![Content::text(truncate_to_tokens(
+            &output,
+            MAX_OUTPUT_TOKENS,
+        ))])
     }
 }
 
@@ -281,11 +296,19 @@ impl Tool for HistoryReadItemTool {
     async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let window_id = match args.get("window_id").and_then(Value::as_u64) {
             Some(v) => v as usize,
-            None => return Ok(vec![Content::text("[Error]: window_id is required".to_string())]),
+            None => {
+                return Ok(vec![Content::text(
+                    "[Error]: window_id is required".to_string(),
+                )]);
+            }
         };
         let item_id = match args.get("item_id").and_then(Value::as_u64) {
             Some(v) => v as usize,
-            None => return Ok(vec![Content::text("[Error]: item_id is required".to_string())]),
+            None => {
+                return Ok(vec![Content::text(
+                    "[Error]: item_id is required".to_string(),
+                )]);
+            }
         };
         let offset_chars = args
             .get("offset_chars")
@@ -298,7 +321,10 @@ impl Tool for HistoryReadItemTool {
             .map(|v| v as usize)
             .unwrap_or(DEFAULT_READ_LIMIT);
 
-        match self.store.read_item(window_id, item_id, Some(offset_chars), Some(limit_chars)) {
+        match self
+            .store
+            .read_item(window_id, item_id, Some(offset_chars), Some(limit_chars))
+        {
             Some((content, total_len)) => {
                 let end = offset_chars + content.len();
                 let header = if offset_chars > 0 || end < total_len {
@@ -385,13 +411,22 @@ impl Tool for HistorySearchContentsTool {
     async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let query = match args.get("query").and_then(Value::as_str) {
             Some(q) => q.trim(),
-            None => return Ok(vec![Content::text("[Error]: query is required".to_string())]),
+            None => {
+                return Ok(vec![Content::text(
+                    "[Error]: query is required".to_string(),
+                )]);
+            }
         };
         if query.is_empty() {
-            return Ok(vec![Content::text("[Error]: query cannot be empty".to_string())]);
+            return Ok(vec![Content::text(
+                "[Error]: query cannot be empty".to_string(),
+            )]);
         }
 
-        let window_id = args.get("window_id").and_then(Value::as_u64).map(|v| v as usize);
+        let window_id = args
+            .get("window_id")
+            .and_then(Value::as_u64)
+            .map(|v| v as usize);
         let role = args.get("role").and_then(Value::as_str);
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(10) as usize;
 
@@ -417,16 +452,17 @@ impl Tool for HistorySearchContentsTool {
             ));
         }
 
-        Ok(vec![Content::text(truncate_to_tokens(&output, MAX_OUTPUT_TOKENS))])
+        Ok(vec![Content::text(truncate_to_tokens(
+            &output,
+            MAX_OUTPUT_TOKENS,
+        ))])
     }
 }
 
 // ── Registration helper ─────────────────────────────────────────────────────
 
 /// Create all 4 history tools from a shared store.
-pub fn create_history_tools(
-    store: Arc<HistoryStore>,
-) -> Vec<Box<dyn Tool>> {
+pub fn create_history_tools(store: Arc<HistoryStore>) -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(HistoryListWindowsTool::new(Arc::clone(&store))),
         Box::new(HistoryListItemsTool::new(Arc::clone(&store))),
@@ -529,10 +565,7 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = HistoryListItemsTool::new(store);
 
-        let out = tool
-            .call(&json!({"role": "user"}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"role": "user"}), &ctx()).await.unwrap();
         let t = text(&out);
         assert!(t.contains("user"));
         assert!(!t.contains("assistant"));
@@ -558,7 +591,10 @@ mod tests {
         let tool = HistoryReadItemTool::new(store);
 
         let out = tool
-            .call(&json!({"window_id": 1, "item_id": 0, "offset_chars": 8}), &ctx())
+            .call(
+                &json!({"window_id": 1, "item_id": 0, "offset_chars": 8}),
+                &ctx(),
+            )
             .await
             .unwrap();
         assert!(text(&out).contains("login bug"));
@@ -583,10 +619,7 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = HistorySearchContentsTool::new(store);
 
-        let out = tool
-            .call(&json!({"query": "login"}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"query": "login"}), &ctx()).await.unwrap();
         let t = text(&out);
         assert!(t.contains("login"));
         assert!(t.contains("W001#0"));
@@ -598,10 +631,7 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = HistorySearchContentsTool::new(store);
 
-        let out = tool
-            .call(&json!({"query": "LOGIN"}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"query": "LOGIN"}), &ctx()).await.unwrap();
         assert!(text(&out).contains("login"));
     }
 
@@ -611,10 +641,7 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = HistorySearchContentsTool::new(store);
 
-        let out = tool
-            .call(&json!({"query": "  "}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"query": "  "}), &ctx()).await.unwrap();
         assert!(text(&out).contains("[Error]"));
     }
 
@@ -651,10 +678,7 @@ mod tests {
             .unwrap();
         let tool = HistoryListItemsTool::new(store);
 
-        let out = tool
-            .call(&json!({"window_id": 1}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"window_id": 1}), &ctx()).await.unwrap();
         let t = text(&out);
         assert!(t.contains("fix the login bug"));
         assert!(!t.contains("second window msg"));
@@ -682,10 +706,7 @@ mod tests {
         let store = setup_store(&tmp);
         let tool = HistoryListItemsTool::new(store);
 
-        let out = tool
-            .call(&json!({"limit": 1}), &ctx())
-            .await
-            .unwrap();
+        let out = tool.call(&json!({"limit": 1}), &ctx()).await.unwrap();
         let t = text(&out);
         // Should have exactly 1 item line (plus no truncation marker)
         let item_lines: Vec<&str> = t.lines().filter(|l| l.starts_with("[W")).collect();
@@ -745,7 +766,10 @@ mod tests {
         let tool = HistoryReadItemTool::new(store);
 
         let out = tool
-            .call(&json!({"window_id": 1, "item_id": 0, "limit_chars": 5}), &ctx())
+            .call(
+                &json!({"window_id": 1, "item_id": 0, "limit_chars": 5}),
+                &ctx(),
+            )
             .await
             .unwrap();
         let t = text(&out);
@@ -778,10 +802,7 @@ mod tests {
         // Add more windows to stress the concurrent reads
         for i in 2..=5 {
             store
-                .archive_window(
-                    i,
-                    &[ChatMessage::user(&format!("window{i} msg"))],
-                )
+                .archive_window(i, &[ChatMessage::user(&format!("window{i} msg"))])
                 .unwrap();
         }
 
@@ -791,9 +812,7 @@ mod tests {
         let handles: Vec<_> = (0..4)
             .map(|_| {
                 let tool = Arc::clone(&tool);
-                tokio::spawn(async move {
-                    tool.call(&json!({}), &ctx()).await
-                })
+                tokio::spawn(async move { tool.call(&json!({}), &ctx()).await })
             })
             .collect();
 
@@ -858,5 +877,4 @@ mod tests {
             assert!(!text(&out).is_empty());
         }
     }
-
 }
