@@ -7,6 +7,7 @@
 //! - **context_rotation**: notes, history, handoff (context window management)
 //! - **multi-agent**: spawn, send_message, followup_task, wait, list, close
 //! - **shell**: execute_command
+//! - **task_registry**: Generic task registry framework (business-agnostic)
 //!
 //! Each tool implements `agent_base::Tool` (or `TypedTool`) and delegates to
 //! the corresponding `agent_works` infrastructure types.
@@ -18,9 +19,12 @@
 //! | `file` | ReadFileTool, WriteFileTool, ListFilesTool |
 //! | `context_rotation` | NotesStore, HistoryStore, extract_ledger + 9 LLM tools |
 //! | `multi-agent` | 6 multi-agent tools |
-//! | `shell` | LocalShellTool |
+//! | `shell` | LocalShellTool, BackgroundTaskRegistry |
 //!
 //! All features are opt-in. Use `full` to enable all.
+
+/// Generic task registry framework (always available).
+pub mod task_registry;
 
 #[cfg(feature = "file")]
 pub mod file;
@@ -33,3 +37,6 @@ pub mod multi_agent;
 
 #[cfg(feature = "shell")]
 pub mod local_shell;
+
+#[cfg(feature = "shell")]
+pub mod background_shell;

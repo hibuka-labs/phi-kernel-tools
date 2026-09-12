@@ -1,22 +1,37 @@
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 
 use agent_base::{AgentResult, Content, Tool, ToolContext};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
+use tokio_util::sync::CancellationToken;
+
+use crate::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
 
 /// Local shell command execution tool.
 ///
 /// Executes arbitrary commands via `sh -c`, with support for timeout,
-/// cancellation, and working directory.
+/// cancellation, and working directory. Optionally supports background
+/// execution via an injected `BackgroundTaskRegistry`.
 pub struct LocalShellTool {
     timeout_ms: u64,
+    registry: Option<Arc<BackgroundTaskRegistry>>,
 }
 
 impl LocalShellTool {
     pub fn new(timeout_ms: u64) -> Self {
-        Self { timeout_ms }
+        Self {
+            timeout_ms,
+            registry: None,
+        }
+    }
+
+    /// Inject a background task registry. Enables `background: true` support.
+    pub fn with_registry(mut self, registry: Arc<BackgroundTaskRegistry>) -> Self {
+        self.registry = Some(registry);
+        self
     }
 }
 
@@ -118,6 +133,11 @@ impl Tool for LocalShellTool {
                 "working_dir": {
                     "type": "string",
                     "description": "Working directory. Uses the current directory if not specified."
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": "Run in background. Returns immediately with a task_id. Use task_output to check results.",
+                    "default": false
                 }
             },
             "required": ["command"]
@@ -152,6 +172,56 @@ impl Tool for LocalShellTool {
 
         let working_dir = args.get("working_dir").and_then(Value::as_str);
 
+        // ── Background path ──────────────────────────────────────────
+        let is_background = args
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        if is_background {
+            let Some(registry) = &self.registry else {
+                return Ok(vec![Content::text(
+                    "[Error]: background=true requires a BackgroundTaskRegistry. \
+                     No registry was injected at build time."
+                        .to_string(),
+                )]);
+            };
+
+            let cancel_token = CancellationToken::new();
+            let task_id = match registry.register(
+                &command,
+                working_dir,
+                cancel_token.clone(),
+                None, // pgid set after spawn
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    return Ok(vec![Content::text(format!("[Error]: {}", e))]);
+                }
+            };
+
+            let timeout_ms = self.timeout_ms;
+            let reg = registry.clone();
+            let cmd = command.clone();
+            let dir = working_dir.map(String::from);
+            let tid = task_id.clone();
+
+            // Spawn a 'static executor task — all data is owned/cloned in.
+            tokio::spawn(async move {
+                run_background_task(&reg, &tid, &cmd, dir.as_deref(), timeout_ms, cancel_token).await;
+            });
+
+            return Ok(vec![Content::text(format!(
+                "{}",
+                json!({
+                    "background": true,
+                    "task_id": task_id,
+                    "message": "Command started in background. Use task_output to check."
+                })
+            ))]);
+        }
+
+        // ── Foreground path (unchanged) ─────────────────────────────
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c")
             .arg(&command)
@@ -307,6 +377,142 @@ impl Tool for LocalShellTool {
     }
 }
 
+/// Background executor: spawns the command, streams output to the registry,
+/// and handles timeout / cancellation / normal completion.
+///
+/// Runs as a detached tokio task — all parameters are owned or cloned.
+async fn run_background_task(
+    registry: &BackgroundTaskRegistry,
+    task_id: &str,
+    command: &str,
+    working_dir: Option<&str>,
+    timeout_ms: u64,
+    cancel_token: CancellationToken,
+) {
+    let mut cmd = tokio::process::Command::new("sh");
+    cmd.arg("-c")
+        .arg(command)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .kill_on_drop(false);
+
+    #[cfg(unix)]
+    cmd.process_group(0);
+
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!(error = %e, command = %command, "background: spawn failed");
+            registry.set_error(task_id, format!("spawn failed: {}", e));
+            return;
+        }
+    };
+
+    let pid = child.id();
+    registry.set_pgid(task_id, pid);
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let mut guard = ProcessGroupGuard {
+        pgid: pid,
+        child,
+        done: false,
+    };
+
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
+
+    if let Some(stdout) = stdout {
+        let tx = line_tx.clone();
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx.send((false, line)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    if let Some(stderr) = stderr {
+        let tx = line_tx;
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if tx.send((true, line)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    let mut stdout_buf = String::new();
+    let mut stderr_buf = String::new();
+    let sleep = tokio::time::sleep(Duration::from_millis(timeout_ms));
+    tokio::pin!(sleep);
+
+    loop {
+        tokio::select! {
+            line = line_rx.recv() => {
+                match line {
+                    Some((is_stderr, line)) => {
+                        // Bounded by registry's append_buffer (head 8K + tail 24K).
+                        if is_stderr {
+                            stderr_buf.push_str(&line);
+                            stderr_buf.push('\n');
+                            registry.append_output(task_id, None, Some(&line));
+                        } else {
+                            stdout_buf.push_str(&line);
+                            stdout_buf.push('\n');
+                            registry.append_output(task_id, Some(&line), None);
+                        }
+                    }
+                    None => break, // all output drained — process exited
+                }
+            }
+            _ = &mut sleep => {
+                kill_process_group(pid);
+                tracing::warn!(command = %command, timeout_ms = timeout_ms, "background: timed out");
+                // Drain remaining buffered output
+                while let Ok((is_stderr, line)) = line_rx.try_recv() {
+                    if is_stderr {
+                        registry.append_output(task_id, None, Some(&line));
+                    } else {
+                        registry.append_output(task_id, Some(&line), None);
+                    }
+                }
+                registry.update_status(task_id, BackgroundTaskStatus::TimedOut);
+                guard.done = true;
+                return;
+            }
+            _ = cancel_token.cancelled() => {
+                kill_process_group(pid);
+                tracing::info!(command = %command, "background: cancelled");
+                registry.update_status(task_id, BackgroundTaskStatus::Cancelled);
+                guard.done = true;
+                return;
+            }
+        }
+    }
+
+    // Reap exit code
+    match guard.child.wait().await {
+        Ok(status) => {
+            guard.done = true;
+            registry.finish(task_id, status.code());
+        }
+        Err(e) => {
+            guard.done = true;
+            tracing::error!(error = %e, command = %command, "background: wait failed");
+            registry.set_error(task_id, format!("wait failed: {}", e));
+        }
+    }
+}
+
 /// Kill the spawned command's process group on timeout/cancel, so children-of-
 /// children (e.g. a `java` server launched by `mvn spring-boot:run`) don't leak
 /// as orphans once the direct child is gone. `process_group(0)` made the child a
@@ -319,7 +525,7 @@ impl Tool for LocalShellTool {
 /// trees. The raw syscall — the same one the shell builtin uses — has no such
 /// argv-parsing surface and works in every environment tested.
 #[cfg(unix)]
-fn kill_process_group(pgid: Option<u32>) {
+pub(crate) fn kill_process_group(pgid: Option<u32>) {
     let Some(pgid) = pgid else { return };
     // SAFETY: `pgid` is the pid of the process the tool spawned and is still
     // running (only reached on timeout/cancel before reap). A negative pid
@@ -332,7 +538,7 @@ fn kill_process_group(pgid: Option<u32>) {
 
 /// Non-unix fallback: kill only the direct child (no process-group support).
 #[cfg(not(unix))]
-fn kill_process_group(pid: Option<u32>) {
+pub(crate) fn kill_process_group(pid: Option<u32>) {
     let Some(pid) = pid else { return };
     let _ = std::process::Command::new("kill")
         .arg("-9")
