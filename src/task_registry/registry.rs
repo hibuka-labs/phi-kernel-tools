@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn watch_receiver_gets_notified() {
         let reg = TaskRegistry::<Task>::new(4);
-        let mut rx = reg.watch();
+        let rx = reg.watch();
         reg.register(make_task("t1"), CancellationToken::new())
             .unwrap();
         // The watch channel should have been updated
