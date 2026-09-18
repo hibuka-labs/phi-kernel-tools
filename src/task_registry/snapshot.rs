@@ -37,3 +37,78 @@ impl<E: TaskEntry + Clone> Snapshot<E> {
         self.finished_at.map(|finished| finished - self.created_at)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum St {
+        Running,
+        Done,
+    }
+    impl TaskStatus for St {
+        fn is_terminal(&self) -> bool {
+            matches!(self, Self::Done)
+        }
+        fn is_wake_worthy(&self) -> bool {
+            matches!(self, Self::Done)
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct E {
+        id: String,
+        status: St,
+    }
+    impl TaskEntry for E {
+        type Status = St;
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn status(&self) -> &St {
+            &self.status
+        }
+        fn set_status(&mut self, s: St) {
+            self.status = s;
+        }
+    }
+
+    fn snap(status: St, finished: bool) -> Snapshot<E> {
+        Snapshot {
+            id: "t".into(),
+            entry: E {
+                id: "t".into(),
+                status,
+            },
+            created_at: Instant::now() - Duration::from_millis(100),
+            finished_at: if finished { Some(Instant::now()) } else { None },
+        }
+    }
+
+    #[test]
+    fn is_terminal_reflects_entry() {
+        assert!(!snap(St::Running, false).is_terminal());
+        assert!(snap(St::Done, true).is_terminal());
+    }
+
+    #[test]
+    fn elapsed_is_positive() {
+        let s = snap(St::Running, false);
+        assert!(s.elapsed() >= Duration::from_millis(50));
+    }
+
+    #[test]
+    fn duration_none_when_running() {
+        assert!(snap(St::Running, false).duration().is_none());
+    }
+
+    #[test]
+    fn duration_some_when_finished() {
+        let s = snap(St::Done, true);
+        let d = s.duration().unwrap();
+        assert!(d >= Duration::ZERO);
+        assert!(d <= Duration::from_millis(200));
+    }
+}
