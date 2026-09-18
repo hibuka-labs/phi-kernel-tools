@@ -19,7 +19,7 @@ fuzzing = ["file"]
 
 [dependencies]
 agent-base = { version = "0.7.0" }
-agent-works = { version = "0.7.0", features = ["multi_agent"] }
+agent-works = { version = "0.8.0", features = ["multi_agent"] }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 ignore = "0.4"
