@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-18
+
+### Added
+- **Generic task registry framework**: reusable task lifecycle tracking with
+  typed metadata, status derivation, and snapshot support.
+- **`force` flag on `close_agent`**: prevents accidental force-kill of
+  long-running child agents. Callers must set `force=true` to explicitly
+  acknowledge partial-work loss when closing a running agent.
+
 ## [0.7.0] - 2026-09-11
 
 ### Added
