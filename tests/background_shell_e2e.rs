@@ -19,7 +19,12 @@ fn ctx() -> ToolContext {
 fn setup(
     max_tasks: usize,
     shell_timeout_ms: u64,
-) -> (Arc<BackgroundTaskRegistry>, LocalShellTool, TaskOutputTool, TaskCancelTool) {
+) -> (
+    Arc<BackgroundTaskRegistry>,
+    LocalShellTool,
+    TaskOutputTool,
+    TaskCancelTool,
+) {
     let reg = BackgroundTaskRegistry::new(max_tasks);
     let shell = LocalShellTool::new(shell_timeout_ms).with_registry(reg.clone());
     let output = TaskOutputTool::new(reg.clone());
@@ -39,7 +44,10 @@ async fn background_and_foreground_both_succeed() {
 
     // Start background command
     let bg_result = shell
-        .call(&json!({"command": "sleep 0.3 && echo bg_done", "background": true}), &ctx())
+        .call(
+            &json!({"command": "sleep 0.3 && echo bg_done", "background": true}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let bg_text = content_text(&bg_result);
@@ -53,11 +61,17 @@ async fn background_and_foreground_both_succeed() {
         .await
         .unwrap();
     let fg_text = content_text(&fg_result);
-    assert!(fg_text.contains("fg_hello"), "foreground should work: {fg_text}");
+    assert!(
+        fg_text.contains("fg_hello"),
+        "foreground should work: {fg_text}"
+    );
 
     // Wait for bg to finish
     let done_text = out
-        .call(&json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}), &ctx())
+        .call(
+            &json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let done_json = parse_json(&content_text(&done_text));
@@ -85,12 +99,16 @@ async fn background_task_times_out() {
 
     // Wait for the timeout to fire
     let snap_text = out
-        .call(&json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}), &ctx())
+        .call(
+            &json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let snap_json = parse_json(&content_text(&snap_text));
     assert_eq!(
-        snap_json["status"], "timed_out",
+        snap_json["status"],
+        "timed_out",
         "expected timed_out: {}",
         content_text(&snap_text)
     );
@@ -145,7 +163,10 @@ async fn wait_on_completed_task_returns_immediately() {
 
     // Start a quick command
     let bg_result = shell
-        .call(&json!({"command": "echo instant", "background": true}), &ctx())
+        .call(
+            &json!({"command": "echo instant", "background": true}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let tid = parse_json(&content_text(&bg_result))["task_id"]
@@ -155,7 +176,10 @@ async fn wait_on_completed_task_returns_immediately() {
 
     // Wait for it to finish
     let done_text = out
-        .call(&json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}), &ctx())
+        .call(
+            &json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let done_json = parse_json(&content_text(&done_text));
@@ -164,7 +188,10 @@ async fn wait_on_completed_task_returns_immediately() {
     // Second wait should return immediately (already done)
     let start = std::time::Instant::now();
     let again_text = out
-        .call(&json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}), &ctx())
+        .call(
+            &json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let elapsed = start.elapsed();
@@ -195,7 +222,10 @@ async fn exceeding_max_tasks_returns_error() {
 
     // Third should fail
     let result = shell
-        .call(&json!({"command": "echo overflow", "background": true}), &ctx())
+        .call(
+            &json!({"command": "echo overflow", "background": true}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let text = content_text(&result);
@@ -213,7 +243,10 @@ async fn gced_task_returns_not_found() {
 
     // Start and wait for completion
     let bg_result = shell
-        .call(&json!({"command": "echo gc_test", "background": true}), &ctx())
+        .call(
+            &json!({"command": "echo gc_test", "background": true}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let tid = parse_json(&content_text(&bg_result))["task_id"]
@@ -222,7 +255,10 @@ async fn gced_task_returns_not_found() {
         .to_string();
 
     let done_text = out
-        .call(&json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}), &ctx())
+        .call(
+            &json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}),
+            &ctx(),
+        )
         .await
         .unwrap();
     assert!(content_text(&done_text).contains("\"done\""));
@@ -231,10 +267,7 @@ async fn gced_task_returns_not_found() {
     reg.snapshot_all(Duration::ZERO);
 
     // Query should return not_found
-    let not_found_text = out
-        .call(&json!({"task_id": &tid}), &ctx())
-        .await
-        .unwrap();
+    let not_found_text = out.call(&json!({"task_id": &tid}), &ctx()).await.unwrap();
     assert!(
         content_text(&not_found_text).contains("not_found"),
         "expected not_found after GC: {}",
@@ -274,10 +307,7 @@ async fn bad_working_dir_sets_error_status() {
     );
 
     // task_output should also report the error
-    let out_text = out
-        .call(&json!({"task_id": &tid}), &ctx())
-        .await
-        .unwrap();
+    let out_text = out.call(&json!({"task_id": &tid}), &ctx()).await.unwrap();
     assert!(
         content_text(&out_text).contains("\"error\""),
         "expected error in output: {}",
@@ -304,7 +334,10 @@ async fn background_output_is_captured() {
         .to_string();
 
     let done_text = out
-        .call(&json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}), &ctx())
+        .call(
+            &json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let done_json = parse_json(&content_text(&done_text));

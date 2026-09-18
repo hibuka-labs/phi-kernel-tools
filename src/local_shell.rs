@@ -208,7 +208,8 @@ impl Tool for LocalShellTool {
 
             // Spawn a 'static executor task — all data is owned/cloned in.
             tokio::spawn(async move {
-                run_background_task(&reg, &tid, &cmd, dir.as_deref(), timeout_ms, cancel_token).await;
+                run_background_task(&reg, &tid, &cmd, dir.as_deref(), timeout_ms, cancel_token)
+                    .await;
             });
 
             return Ok(vec![Content::text(format!(

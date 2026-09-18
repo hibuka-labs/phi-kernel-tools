@@ -18,13 +18,13 @@
 //! - `TaskEntry` trait: Business layer implements this for each task type
 //! - `TaskRegistry<E>`: Generic registry managing any `E: TaskEntry`
 
-mod traits;
 mod registry;
 mod snapshot;
+mod traits;
 
-pub use traits::{TaskStatus, TaskEntry, InflightWork};
 pub use registry::TaskRegistry;
 pub use snapshot::Snapshot;
+pub use traits::{InflightWork, TaskEntry, TaskStatus};
 
 // Re-export commonly used types
 pub use tokio_util::sync::CancellationToken;

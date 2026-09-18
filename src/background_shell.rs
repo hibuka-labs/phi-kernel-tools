@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::local_shell::kill_process_group;
-use crate::task_registry::{TaskStatus, TaskEntry, TaskRegistry as GenericRegistry};
+use crate::task_registry::{TaskEntry, TaskRegistry as GenericRegistry, TaskStatus};
 
 // ── Shell-specific types ──────────────────────────────────────────────
 
@@ -144,9 +144,7 @@ impl ShellTaskEntry {
         let head: String = buf.chars().take(HEAD_LIMIT).collect();
         let tail: String = {
             let char_count = buf.chars().count();
-            buf.chars()
-                .skip(char_count - TAIL_LIMIT)
-                .collect()
+            buf.chars().skip(char_count - TAIL_LIMIT).collect()
         };
         *buf = format!("{head}{MARKER}{tail}");
     }
@@ -303,7 +301,7 @@ impl BackgroundTaskRegistry {
         self.inner
             .snapshot_all(gc_ttl)
             .iter()
-            .map(|snap| BackgroundTaskSnapshot::from_generic(snap))
+            .map(BackgroundTaskSnapshot::from_generic)
             .collect()
     }
 
@@ -315,7 +313,8 @@ impl BackgroundTaskRegistry {
         let cancelled = self.inner.cancel(id);
         if cancelled {
             // Set the business-layer status to Cancelled
-            self.inner.update_status(id, BackgroundTaskStatus::Cancelled);
+            self.inner
+                .update_status(id, BackgroundTaskStatus::Cancelled);
         }
         cancelled
     }
@@ -476,10 +475,7 @@ impl Tool for TaskOutputTool {
             )]);
         }
 
-        let should_wait = args
-            .get("wait")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        let should_wait = args.get("wait").and_then(Value::as_bool).unwrap_or(false);
 
         if should_wait {
             let timeout_ms = args
@@ -586,10 +582,7 @@ impl Tool for TaskCancelTool {
 
         // Check existence and status before cancelling.
         match self.registry.snapshot(&task_id) {
-            None => Ok(vec![Content::text(format!(
-                "Task {} not found.",
-                task_id
-            ))]),
+            None => Ok(vec![Content::text(format!("Task {} not found.", task_id))]),
             Some(snap) if snap.status.is_terminal() => Ok(vec![Content::text(format!(
                 "Task {} already finished with status: {:?}.",
                 task_id, snap.status
@@ -597,10 +590,7 @@ impl Tool for TaskCancelTool {
             Some(_) => {
                 // cancel() returns true only for non-terminal tasks.
                 self.registry.cancel(&task_id);
-                Ok(vec![Content::text(format!(
-                    "Task {} cancelled.",
-                    task_id
-                ))])
+                Ok(vec![Content::text(format!("Task {} cancelled.", task_id))])
             }
         }
     }

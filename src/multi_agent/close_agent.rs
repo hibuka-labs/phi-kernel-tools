@@ -90,19 +90,20 @@ impl TypedTool for CloseAgentTool {
         // force-killed mid-run on a reflex close, losing the
         // sibling's held report. The caller must explicitly
         // acknowledge the partial-work loss.
-        if let Some(agent) = &pre {
-            if agent.status == "running" && !args.force {
-                let msg = format!(
-                    "agent still running ({} tool calls). \
-                     Set force=true to close anyway — its partial work is lost.",
-                    agent.tool_calls
-                );
-                return Ok(CloseAgentOutput {
-                    closed: false,
-                    previous_status: "running".to_string(),
-                    message: msg,
-                });
-            }
+        if let Some(agent) = &pre
+            && agent.status == "running"
+            && !args.force
+        {
+            let msg = format!(
+                "agent still running ({} tool calls). \
+                 Set force=true to close anyway — its partial work is lost.",
+                agent.tool_calls
+            );
+            return Ok(CloseAgentOutput {
+                closed: false,
+                previous_status: "running".to_string(),
+                message: msg,
+            });
         }
 
         let warnings = pre
@@ -134,7 +135,7 @@ impl TypedTool for CloseAgentTool {
 
 #[cfg(test)]
 mod tests {
-    use super::{close_warnings, CloseAgentArgs};
+    use super::{CloseAgentArgs, close_warnings};
 
     #[test]
     fn pending_reports_warn_that_delivery_survives_close() {

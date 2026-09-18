@@ -105,7 +105,11 @@ impl<E: TaskEntry> TaskRegistry<E> {
     ///
     /// Returns `Ok(task_id)` or `Err(RegisterError::LimitExceeded)` if the
     /// limit is reached.
-    pub fn register(&self, entry: E, cancel_token: CancellationToken) -> Result<String, RegisterError> {
+    pub fn register(
+        &self,
+        entry: E,
+        cancel_token: CancellationToken,
+    ) -> Result<String, RegisterError> {
         let mut map = self.slots.write().unwrap();
         let running = map
             .values()
@@ -227,12 +231,9 @@ impl<E: TaskEntry> TaskRegistry<E> {
         E: Clone,
     {
         // Quick check: already terminal?
-        if let Some(snap) = self.snapshot(id) {
-            if snap.entry.status().is_terminal() {
-                return Some(snap);
-            }
-        } else {
-            return None; // task not found
+        let snap = self.snapshot(id)?;
+        if snap.entry.status().is_terminal() {
+            return Some(snap);
         }
 
         let mut rx = self.status_rx.clone();
@@ -246,16 +247,13 @@ impl<E: TaskEntry> TaskRegistry<E> {
 
             match tokio::time::timeout(remaining, rx.changed()).await {
                 Ok(Ok(())) => {
-                    if let Some(snap) = self.snapshot(id) {
-                        if snap.entry.status().is_terminal() {
-                            return Some(snap);
-                        }
-                    } else {
-                        return None; // GC'd while waiting
+                    let snap = self.snapshot(id)?; // None => GC'd while waiting
+                    if snap.entry.status().is_terminal() {
+                        return Some(snap);
                     }
                 }
                 Ok(Err(_)) => return self.snapshot(id), // sender dropped
-                Err(_) => return self.snapshot(id),      // timeout
+                Err(_) => return self.snapshot(id),     // timeout
             }
         }
     }
@@ -268,7 +266,7 @@ impl<E: TaskEntry> TaskRegistry<E> {
     /// Shutdown: cancel all running tasks and clear the registry.
     pub fn shutdown(&self) {
         let mut map = self.slots.write().unwrap();
-        for (_, slot) in map.iter_mut() {
+        for slot in map.values_mut() {
             if !slot.entry.status().is_terminal() {
                 slot.cancel_token.cancel();
             }
@@ -308,5 +306,276 @@ impl<E: TaskEntry> TaskRegistry<E> {
     {
         let map = self.slots.read().unwrap();
         map.get(id).map(|slot| f(&slot.entry))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum Status {
+        Running,
+        Done,
+        Error(String),
+    }
+
+    impl TaskStatus for Status {
+        fn is_terminal(&self) -> bool {
+            !matches!(self, Self::Running)
+        }
+        fn is_wake_worthy(&self) -> bool {
+            matches!(self, Self::Done | Self::Error(_))
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct Task {
+        id: String,
+        status: Status,
+        data: String,
+    }
+
+    impl TaskEntry for Task {
+        type Status = Status;
+        fn id(&self) -> &str {
+            &self.id
+        }
+        fn status(&self) -> &Status {
+            &self.status
+        }
+        fn set_status(&mut self, status: Status) {
+            self.status = status;
+        }
+    }
+
+    fn make_task(id: &str) -> Task {
+        Task {
+            id: id.into(),
+            status: Status::Running,
+            data: String::new(),
+        }
+    }
+
+    #[test]
+    fn register_and_snapshot() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        assert_eq!(id, "t1");
+        let snap = reg.snapshot(&id).unwrap();
+        assert_eq!(snap.id, "t1");
+        assert!(!snap.is_terminal());
+        assert!(snap.duration().is_none());
+    }
+
+    #[test]
+    fn register_limit_exceeded() {
+        let reg = TaskRegistry::<Task>::new(1);
+        reg.register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        let err = reg
+            .register(make_task("t2"), CancellationToken::new())
+            .unwrap_err();
+        assert!(format!("{err}").contains("too many"));
+    }
+
+    #[test]
+    fn terminal_tasks_do_not_count_against_limit() {
+        let reg = TaskRegistry::<Task>::new(1);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id, Status::Done);
+        // Now we can register another one
+        reg.register(make_task("t2"), CancellationToken::new())
+            .unwrap();
+        assert_eq!(reg.running_count(), 1);
+    }
+
+    #[test]
+    fn update_status_sets_terminal_and_finished_at() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id, Status::Done);
+        let snap = reg.snapshot(&id).unwrap();
+        assert!(snap.is_terminal());
+        assert!(snap.duration().is_some());
+    }
+
+    #[test]
+    fn update_status_ignores_transition_after_terminal() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id, Status::Done);
+        reg.update_status(&id, Status::Error("ignored".into()));
+        let snap = reg.snapshot(&id).unwrap();
+        assert_eq!(snap.entry.status, Status::Done);
+    }
+
+    #[test]
+    fn update_status_nonexistent_is_noop() {
+        let reg = TaskRegistry::<Task>::new(4);
+        reg.update_status("missing", Status::Done); // should not panic
+    }
+
+    #[test]
+    fn cancel_triggers_token() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let token = CancellationToken::new();
+        let id = reg.register(make_task("t1"), token.clone()).unwrap();
+        assert!(!token.is_cancelled());
+        assert!(reg.cancel(&id));
+        assert!(token.is_cancelled());
+        assert!(reg.is_cancelled(&id));
+    }
+
+    #[test]
+    fn cancel_terminal_returns_false() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id, Status::Done);
+        assert!(!reg.cancel(&id));
+    }
+
+    #[test]
+    fn cancel_nonexistent_returns_false() {
+        let reg = TaskRegistry::<Task>::new(4);
+        assert!(!reg.cancel("missing"));
+    }
+
+    #[test]
+    fn is_cancelled_nonexistent_returns_false() {
+        let reg = TaskRegistry::<Task>::new(4);
+        assert!(!reg.is_cancelled("missing"));
+    }
+
+    #[test]
+    fn snapshot_nonexistent_returns_none() {
+        let reg = TaskRegistry::<Task>::new(4);
+        assert!(reg.snapshot("missing").is_none());
+    }
+
+    #[test]
+    fn snapshot_all_returns_all_and_gcs() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id1 = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        let _id2 = reg
+            .register(make_task("t2"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id1, Status::Done);
+
+        // With very short GC TTL, finished tasks get collected
+        let snaps = reg.snapshot_all(Duration::from_millis(1));
+        std::thread::sleep(Duration::from_millis(10));
+        let snaps2 = reg.snapshot_all(Duration::from_millis(1));
+        assert!(snaps2.len() <= snaps.len());
+    }
+
+    #[test]
+    fn with_entry_mut_modifies_data() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.with_entry_mut(&id, |e| e.data = "hello".into());
+        let data = reg.with_entry(&id, |e| e.data.clone()).unwrap();
+        assert_eq!(data, "hello");
+    }
+
+    #[test]
+    fn with_entry_nonexistent_returns_none() {
+        let reg = TaskRegistry::<Task>::new(4);
+        assert!(reg.with_entry("missing", |_| ()).is_none());
+        assert!(reg.with_entry_mut("missing", |_| ()).is_none());
+    }
+
+    #[test]
+    fn shutdown_cancels_all_and_clears() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let t1 = CancellationToken::new();
+        let t2 = CancellationToken::new();
+        reg.register(make_task("t1"), t1.clone()).unwrap();
+        reg.register(make_task("t2"), t2.clone()).unwrap();
+        reg.shutdown();
+        assert!(t1.is_cancelled());
+        assert!(t2.is_cancelled());
+        assert_eq!(reg.running_count(), 0);
+    }
+
+    #[test]
+    fn watch_receiver_gets_notified() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let mut rx = reg.watch();
+        reg.register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        // The watch channel should have been updated
+        assert!(rx.has_changed().unwrap_or(true));
+    }
+
+    #[tokio::test]
+    async fn wait_returns_immediately_if_already_terminal() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id, Status::Done);
+        let snap = reg.wait(&id, Duration::from_secs(1)).await.unwrap();
+        assert!(snap.is_terminal());
+    }
+
+    #[tokio::test]
+    async fn wait_returns_none_for_nonexistent() {
+        let reg = TaskRegistry::<Task>::new(4);
+        assert!(
+            reg.wait("missing", Duration::from_millis(50))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_times_out() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        let snap = reg.wait(&id, Duration::from_millis(50)).await.unwrap();
+        assert!(!snap.is_terminal()); // still running
+    }
+
+    #[tokio::test]
+    async fn wait_wakes_on_status_change() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        let id_clone = id.clone();
+        let reg_clone = Arc::clone(&reg);
+
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            reg_clone.update_status(&id_clone, Status::Done);
+        });
+
+        let snap = reg.wait(&id, Duration::from_secs(1)).await.unwrap();
+        assert!(snap.is_terminal());
+        handle.await.unwrap();
+    }
+
+    #[test]
+    fn display_register_error() {
+        let err = RegisterError::LimitExceeded;
+        assert_eq!(format!("{err}"), "too many tasks running");
     }
 }
