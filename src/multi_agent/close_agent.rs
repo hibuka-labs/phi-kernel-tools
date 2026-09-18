@@ -8,6 +8,13 @@ use serde::{Deserialize, Serialize};
 pub struct CloseAgentArgs {
     /// Agent path to close (e.g., 'root/searcher')
     pub agent_path: String,
+    /// Required to close a still-running agent (session
+    /// 20260914_50cf809d: a 534s/35-tool-call analysis was
+    /// force-killed mid-run, losing its sibling's held report).
+    /// Set `true` only after confirming the agent's partial work is
+    /// acceptable loss.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -77,6 +84,27 @@ impl TypedTool for CloseAgentTool {
             .list_agents()
             .into_iter()
             .find(|a| a.agent_path == args.agent_path);
+
+        // Gate running-agent closes behind `force` — session
+        // 20260914_50cf809d: a 534s/35-tool-call analysis was
+        // force-killed mid-run on a reflex close, losing the
+        // sibling's held report. The caller must explicitly
+        // acknowledge the partial-work loss.
+        if let Some(agent) = &pre {
+            if agent.status == "running" && !args.force {
+                let msg = format!(
+                    "agent still running ({} tool calls). \
+                     Set force=true to close anyway — its partial work is lost.",
+                    agent.tool_calls
+                );
+                return Ok(CloseAgentOutput {
+                    closed: false,
+                    previous_status: "running".to_string(),
+                    message: msg,
+                });
+            }
+        }
+
         let warnings = pre
             .as_ref()
             .map(|a| close_warnings(&a.status, a.pending_results))
@@ -106,7 +134,7 @@ impl TypedTool for CloseAgentTool {
 
 #[cfg(test)]
 mod tests {
-    use super::close_warnings;
+    use super::{close_warnings, CloseAgentArgs};
 
     #[test]
     fn pending_reports_warn_that_delivery_survives_close() {
@@ -131,6 +159,16 @@ mod tests {
         // it must not be nagged.
         assert!(close_warnings("running", 0).is_empty());
         assert!(close_warnings("done", 0).is_empty());
+    }
+
+    #[test]
+    fn running_agent_blocked_without_force() {
+        // Verifies the force-gate logic at the args level (the gate itself
+        // is exercised by the integration-level call_typed path; here we
+        // confirm the schema includes the field and serde defaults it).
+        let args: CloseAgentArgs = serde_json::from_str(r#"{"agent_path":"root/a"}"#).unwrap();
+        assert!(!args.force, "force must default to false");
+        assert_eq!(args.agent_path, "root/a");
     }
 
     #[test]

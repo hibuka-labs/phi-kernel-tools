@@ -297,6 +297,7 @@ mod tests {
             .call_typed(
                 CloseAgentArgs {
                     agent_path: "root/ghost".into(),
+                    force: false,
                 },
                 &ctx,
             )
@@ -399,6 +400,7 @@ mod tests {
             .call_typed(
                 CloseAgentArgs {
                     agent_path: path.clone(),
+                    force: true,
                 },
                 &ctx,
             )
