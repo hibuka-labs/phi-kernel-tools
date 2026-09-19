@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use agent_base::{AgentResult, ToolContext, TypedTool};
+use agent_works::multi_agent::ChildToolCapability;
 use agent_works::multi_agent::MultiAgentRuntime;
 use serde::{Deserialize, Serialize};
 
@@ -65,7 +66,45 @@ what the report should focus on.\n\
 Do NOT write a long detailed brief — extra prose only inflates this\n\
 tool call, which is its main truncation failure mode.\n\
 Give it a short unique name (task_name).\n\
+Omit `tools` for read-only research tasks (the default).\n\
+Request \"write\" only when the task must edit files or run\n\
+commands; use a preset name (researcher/coder/reviewer/tester)\n\
+for its standard persona. In ask mode every sub-agent write is\n\
+confirmed by the user (the popup names the sub-agent).\n\
 Omit `model` unless the user explicitly asked for a different one.";
+
+/// `tools` 参数的合法值（schema enum 约束；未知值 = 工具调用错误，
+/// LLM 可自行换合法值重试）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolsSpec {
+    /// 只读调研（省略 tools 时的默认）。
+    ReadOnly,
+    /// 改文件 / 跑命令的任务。审批模式下用户逐次确认。
+    Write,
+    /// 代码研究（只读 preset）。
+    Researcher,
+    /// 代码编写 preset（含写工具）。
+    Coder,
+    /// 代码评审（只读 preset）。
+    Reviewer,
+    /// 测试编写与执行 preset（含写工具）。
+    Tester,
+}
+
+impl ToolsSpec {
+    /// 映射到框架能力词汇（D2）。
+    pub fn capability(self) -> ChildToolCapability {
+        match self {
+            Self::ReadOnly => ChildToolCapability::ReadOnly,
+            Self::Write => ChildToolCapability::Write,
+            Self::Researcher => ChildToolCapability::Preset("researcher"),
+            Self::Coder => ChildToolCapability::Preset("coder"),
+            Self::Reviewer => ChildToolCapability::Preset("reviewer"),
+            Self::Tester => ChildToolCapability::Preset("tester"),
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SpawnAgentArgs {
@@ -90,6 +129,11 @@ pub struct SpawnAgentArgs {
     /// a per-request model field.
     #[serde(default)]
     pub model: Option<String>,
+    /// 工具面：省略 = read_only。只读调研任务请省略；需要改文件/跑命令的
+    /// 任务请求 "write"；标准人设直接用 preset 名（researcher/coder/
+    /// reviewer/tester）。审批模式下子 agent 的写操作会逐次弹给用户确认。
+    #[serde(default)]
+    pub tools: Option<ToolsSpec>,
 }
 
 #[derive(Debug, Serialize)]
@@ -152,6 +196,14 @@ impl TypedTool for SpawnAgentTool {
             .fork_turns
             .or_else(|| self.runtime.child_fork_history().map(str::to_owned));
 
+        // D2：schema 缺省 read_only——LLM 面 spawn 永远显式请求能力，
+        // 遗留程序化路径的 None 语义不经过这里。
+        let capability = Some(
+            args.tools
+                .map(|t| t.capability())
+                .unwrap_or(ChildToolCapability::ReadOnly),
+        );
+
         match self
             .runtime
             .spawn_child_with_history(
@@ -160,32 +212,49 @@ impl TypedTool for SpawnAgentTool {
                 full_permission,
                 fork_turns,
                 args.model,
+                capability,
                 &ctx.session_id,
             )
             .await
         {
-            Ok(agent_path) => {
+            Ok(echo) => {
                 // The initial task IS the spawn's purpose. A failed delivery
                 // must not be swallowed: the child would sit registered with
                 // zero deliveries, which permanently blocks the runtime's
                 // quiescence (the fan-in batch can never fire), and the
                 // parent would wait forever for a result that was promised.
                 // Close the orphan and report the truth instead.
-                match self.runtime.send_task(&agent_path, message, true) {
+                match self.runtime.send_task(&echo.agent_path, message, true) {
                     Ok(true) => {
                         // TODO(layer-3): args.model is accepted but inert
                         // until request-level model routing lands (see
                         // SpawnAgentArgs::model).
+                        // D3/发现9：回显实际能力——降级明说（避免"假完成"），
+                        // 默认只读保持输出干净。
+                        let mut msg = "Agent spawned successfully".to_string();
+                        if let Some(why) = &echo.degraded_reason {
+                            msg.push_str(&format!(
+                                " (tools degraded to read-only: {why})"
+                            ));
+                        } else {
+                            let registered: Vec<&str> =
+                                echo.registered_tools.iter().map(String::as_str).collect();
+                            msg.push_str(&format!(
+                                " (tools: {}; registered: {})",
+                                capability.unwrap().label(),
+                                registered.join(", ")
+                            ));
+                        }
                         Ok(SpawnAgentOutput {
-                            agent_path,
-                            message: "Agent spawned successfully".to_string(),
+                            agent_path: echo.agent_path,
+                            message: msg,
                         })
                     }
                     Ok(false) | Err(_) => {
                         // Best effort: a close failure here means the
                         // runtime is tearing down anyway; the caller cannot
                         // use the agent either way.
-                        let close_err = self.runtime.close_agent(&agent_path).err();
+                        let close_err = self.runtime.close_agent(&echo.agent_path).err();
                         let why = close_err
                             .map(|e| format!(" (cleanup also failed: {})", e))
                             .unwrap_or_default();
@@ -306,6 +375,79 @@ mod spawn_prompt_guard_tests {
             !DESCRIPTION.contains("COMPLETE and self-contained"),
             "self-contained-brief guidance is the truncation surface this \
              description was rewritten to remove"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tools_spec_tests {
+    use super::{DESCRIPTION, SpawnAgentArgs, ToolsSpec};
+    use agent_works::multi_agent::ChildToolCapability;
+
+    #[test]
+    fn tools_spec_maps_to_capabilities() {
+        assert_eq!(ToolsSpec::ReadOnly.capability(), ChildToolCapability::ReadOnly);
+        assert_eq!(ToolsSpec::Write.capability(), ChildToolCapability::Write);
+        assert_eq!(
+            ToolsSpec::Coder.capability(),
+            ChildToolCapability::Preset("coder")
+        );
+        assert_eq!(
+            ToolsSpec::Tester.capability(),
+            ChildToolCapability::Preset("tester")
+        );
+    }
+
+    #[test]
+    fn tools_is_optional_and_defaults_to_read_only() {
+        // 无 tools 参数 = read_only（serde default）。解析经 serde：
+        let json = r#"{"task_name":"n","task":"t"}"#;
+        let args: SpawnAgentArgs = serde_json::from_str(json).unwrap();
+        assert!(args.tools.is_none());
+        assert_eq!(
+            args.tools.map(|t| t.capability()),
+            None,
+            "省略 = 无能力层请求；spawn 工具层将其映射为 ReadOnly（D2 默认列）"
+        );
+    }
+
+    #[test]
+    fn tools_accepts_all_enum_values() {
+        for (raw, expected) in [
+            ("read_only", ChildToolCapability::ReadOnly),
+            ("write", ChildToolCapability::Write),
+            ("researcher", ChildToolCapability::Preset("researcher")),
+            ("coder", ChildToolCapability::Preset("coder")),
+            ("reviewer", ChildToolCapability::Preset("reviewer")),
+            ("tester", ChildToolCapability::Preset("tester")),
+        ] {
+            let json = format!(r#"{{"task_name":"n","task":"t","tools":"{raw}"}}"#);
+            let args: SpawnAgentArgs = serde_json::from_str(&json)
+                .unwrap_or_else(|e| panic!("{raw} must deserialize: {e}"));
+            assert_eq!(args.tools.unwrap().capability(), expected);
+        }
+    }
+
+    #[test]
+    fn illegal_tools_value_is_an_error() {
+        // 未知名 = 工具调用错误（LLM 换合法值重试）——serde 拒绝即错误路径。
+        let json = r#"{"task_name":"n","task":"t","tools":"translator"}"#;
+        assert!(serde_json::from_str::<SpawnAgentArgs>(json).is_err());
+    }
+
+    #[test]
+    fn description_guides_capability_choice() {
+        assert!(
+            DESCRIPTION.contains("read-only"),
+            "description must say read-only tasks omit tools"
+        );
+        assert!(
+            DESCRIPTION.contains("\"write\""),
+            "description must name the write value"
+        );
+        assert!(
+            DESCRIPTION.contains("preset"),
+            "description must mention preset names"
         );
     }
 }

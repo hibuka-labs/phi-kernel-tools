@@ -145,11 +145,14 @@ mod tests {
         assert!(required.contains(&"task_name".into()));
         assert!(required.contains(&"task".into()));
         let props = schema["properties"].as_object().unwrap();
-        assert_eq!(props.len(), 4, "schema must stay minimal: {props:?}");
+        assert_eq!(props.len(), 5, "schema must stay minimal: {props:?}");
         assert!(props.contains_key("task"));
         assert!(props.contains_key("task_name"));
         assert!(props.contains_key("fork_turns"));
         assert!(props.contains_key("model"));
+        // tools: the capability request (design 2026-09-19 T7) — enum-bound
+        // to the six snake_case values, no free-form strings.
+        assert!(props.contains_key("tools"));
         // Removed fields must stay out of the schema.
         assert!(!props.contains_key("system_prompt"));
         assert!(!props.contains_key("message"));
@@ -427,6 +430,7 @@ mod tests {
                     task: "do something useful".into(),
                     fork_turns: None,
                     model: None,
+                    tools: None,
                 },
                 &ctx,
             )
@@ -434,7 +438,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.agent_path, "root/helper");
-        assert_eq!(result.message, "Agent spawned successfully");
+        // D3/发现9：成功消息回显实际能力面（默认省略 tools = read_only；
+        // fixture 无业务工具 → registered 列表为空是预期的诚实回显）。
+        assert!(
+            result.message.starts_with("Agent spawned successfully (tools: read_only;"),
+            "echo must name the requested face and the registered set: {}",
+            result.message
+        );
 
         // Verify the agent shows up in list
         let t2 = ListAgentsTool::new(rt);
@@ -472,6 +482,7 @@ mod tests {
             task: "do the task".into(),
             fork_turns: None,
             model: None,
+            tools: None,
         };
 
         t.call_typed(mk("first"), &ctx)

@@ -48,6 +48,11 @@ pub struct ListAgentItem {
     /// from you: its report IS en route, ending your turn is what delivers it.
     #[serde(skip_serializing_if = "is_zero")]
     pub pending_results: usize,
+    /// The tools this child was **actually** registered with (design
+    /// 2026-09-19 发现 9 / T8 wiring). Empty for read-only children — the
+    /// omission IS the fact.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub spawned_tools: Vec<String>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -120,6 +125,7 @@ impl TypedTool for ListAgentsTool {
                     last_activity_secs: a.last_activity_secs,
                     task: a.task.as_deref().map(task_excerpt),
                     pending_results: a.pending_results,
+                    spawned_tools: a.spawned_tools,
                 })
                 .collect(),
             delivery_note,
