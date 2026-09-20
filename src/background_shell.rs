@@ -420,7 +420,12 @@ impl Tool for TaskOutputTool {
     }
 
     fn description(&self) -> &'static str {
-        "Check or wait for a background task's result. Use `wait: true` to block until completion."
+        "Check or wait for a background SHELL task's result. Use `wait: true` to block until completion.\n\
+         Scope guard (session 20260919_f65b754c: 12 wasted polls): this only\n\
+         accepts `bg_*` ids returned by `execute_command` with `background: true`.\n\
+         Sub-agent results are NOT fetchable here — they are pushed to you\n\
+         automatically when the agent finishes; end your turn to receive them.\n\
+         NEVER invent ids like `bg_<agent-name>` for a spawned agent."
     }
 
     fn schema(&self) -> Value {
@@ -494,10 +499,7 @@ impl Tool for TaskOutputTool {
                     "{}",
                     json!({
                         "status": "not_found",
-                        "message": format!(
-                            "Task {} not found. It may have been cleaned up after 5 minutes of completion.",
-                            task_id
-                        )
+                        "message": not_found_message(&task_id)
                     })
                 ))]),
             }
@@ -511,15 +513,26 @@ impl Tool for TaskOutputTool {
                     "{}",
                     json!({
                         "status": "not_found",
-                        "message": format!(
-                            "Task {} not found. It may have been cleaned up after 5 minutes of completion.",
-                            task_id
-                        )
+                        "message": not_found_message(&task_id)
                     })
                 ))]),
             }
         }
     }
+}
+
+/// not_found fact + the one redirect that matters. Session
+/// 20260919_f65b754c: a parent polled `bg_analyze-*` (ids fabricated from
+/// sub-agent names) 12 times while its 4 children ran — each a wasted call.
+/// The error is the teachable moment: this registry holds background SHELL
+/// tasks only, and a sub-agent's report is pushed, never fetched.
+fn not_found_message(task_id: &str) -> String {
+    format!(
+        "Task {} not found. It may have been cleaned up after 5 minutes of completion. \
+         This registry holds background SHELL tasks only — a spawned sub-agent's \
+         report is pushed to you automatically; end your turn to receive it.",
+        task_id
+    )
 }
 
 /// `task_cancel` — terminate a running background task.
@@ -615,6 +628,19 @@ mod tests {
         let id = reg.register("echo hi", None, token, None).unwrap();
         assert!(id.starts_with("bg_"), "id should start with bg_: {id}");
         assert_eq!(id.len(), 11, "bg_ + 8 hex chars = 11");
+    }
+
+    // ── not_found teaching message ──
+
+    #[test]
+    fn not_found_message_redirects_sub_agent_polling() {
+        // Session 20260919_f65b754c: 12 × `bg_analyze-*` polls for reports
+        // that are pushed, not fetched. The error must name the redirect.
+        let msg = not_found_message("bg_analyze-codex");
+        assert!(msg.contains("bg_analyze-codex"), "id echoed: {msg}");
+        assert!(msg.contains("not found"), "fact first: {msg}");
+        assert!(msg.contains("sub-agent"), "names the confusion: {msg}");
+        assert!(msg.contains("end your turn"), "names the action: {msg}");
     }
 
     #[test]

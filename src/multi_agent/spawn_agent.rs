@@ -232,6 +232,17 @@ impl TypedTool for SpawnAgentTool {
                         // D3/发现9：回显实际能力——降级明说（避免"假完成"），
                         // 默认只读保持输出干净。
                         let mut msg = "Agent spawned successfully".to_string();
+                        if echo.recycled {
+                            // The same-path predecessor was already terminal
+                            // (done/closed); this spawn took over its
+                            // registration slot — the parent agent must see
+                            // the fact, never a silent takeover (the three
+                            // spawn collisions of session
+                            // 20260920_5ba1bed4).
+                            msg.push_str(
+                                " (recycled a finished agent with the same path)",
+                            );
+                        }
                         if let Some(why) = &echo.degraded_reason {
                             msg.push_str(&format!(
                                 " (tools degraded to read-only: {why})"
