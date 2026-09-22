@@ -87,11 +87,15 @@ async fn background_and_foreground_both_succeed() {
 
 #[tokio::test]
 async fn background_task_times_out() {
-    // Use a very short shell timeout
+    // Explicit per-call fuse: background jobs default to indefinite
+    // (daemon-style), so the test must arm its own short timeout.
     let (_reg, shell, out, _cancel) = setup(4, 200);
 
     let bg_result = shell
-        .call(&json!({"command": "sleep 30", "background": true}), &ctx())
+        .call(
+            &json!({"command": "sleep 30", "background": true, "timeout_ms": 200}),
+            &ctx(),
+        )
         .await
         .unwrap();
     let bg_json = parse_json(&content_text(&bg_result));

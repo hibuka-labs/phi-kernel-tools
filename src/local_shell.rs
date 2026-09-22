@@ -119,7 +119,11 @@ impl Tool for LocalShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command locally. Use for file operations, code compilation, Git operations, system info queries, etc. For commands that may produce large output, consider limiting lines (e.g. journalctl -n 50, grep ... | head -n 30)."
+        "Execute a shell command locally.\n\
+         - Foreground (default): blocks until the command exits, or is killed at timeout_ms (default 120000).\n\
+         - Background (background=true): returns a task_id immediately and keeps running with no timeout by default; its exit sends a system notification. For a server, an exit notification means it died — investigate via task_output(task_id). Read output anytime with task_output; stop with task_cancel.\n\
+         - timeout_ms: kill the process after N ms; 0 = never kill. Background defaults to 0 (indefinite), foreground to 120000. Set it only on background jobs that must finish within a bound (e.g. a long test run).\n\
+         Decide like a person: servers/watchers (vite, mvn spring-boot:run) → background; verify they listen (e.g. lsof -ti:PORT) before reporting success, then leave them alone. Long one-shot jobs (mvn test, npm install) → background with a generous timeout_ms, or foreground when quick. For large expected output, limit lines (grep ... | head -n 30)."
     }
 
     fn schema(&self) -> Value {
@@ -138,6 +142,11 @@ impl Tool for LocalShellTool {
                     "type": "boolean",
                     "description": "Run in background. Returns immediately with a task_id. Use task_output to check results.",
                     "default": false
+                },
+                "timeout_ms": {
+                    "type": "integer",
+                    "description": "Kill the process after N ms; 0 = never kill. Default: 120000 in foreground, indefinite (0) in background.",
+                    "minimum": 0
                 }
             },
             "required": ["command"]
@@ -147,7 +156,7 @@ impl Tool for LocalShellTool {
     fn metadata(&self) -> agent_base::ToolMetadata {
         agent_base::ToolMetadata {
             name: self.name().to_string(),
-            description: "Execute a shell command locally. Use for file operations, code compilation, Git operations, system info queries, etc.".to_string(),
+            description: "Execute a shell command locally; supports background execution with per-call timeout_ms (0 = run indefinitely).".to_string(),
             origin: "phi-kernel-tools".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
@@ -168,8 +177,6 @@ impl Tool for LocalShellTool {
             )]);
         }
 
-        tracing::info!(command = %command, timeout_ms = self.timeout_ms, "execute_command start");
-
         let working_dir = args.get("working_dir").and_then(Value::as_str);
 
         // ── Background path ──────────────────────────────────────────
@@ -177,6 +184,22 @@ impl Tool for LocalShellTool {
             .get("background")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+
+        // Per-call timeout; 0 = never kill. Background defaults to unlimited —
+        // dev servers are legitimate long-running processes, and the old
+        // hard-wired fuse turned background=true into "die at 120s". Foreground
+        // keeps the tool-level default because it blocks the conversation.
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(if is_background { 0 } else { self.timeout_ms });
+
+        tracing::info!(
+            command = %command,
+            timeout_ms = timeout_ms,
+            background = is_background,
+            "execute_command start"
+        );
 
         if is_background {
             let Some(registry) = &self.registry else {
@@ -193,6 +216,7 @@ impl Tool for LocalShellTool {
                 working_dir,
                 cancel_token.clone(),
                 None, // pgid set after spawn
+                timeout_ms,
             ) {
                 Ok(id) => id,
                 Err(e) => {
@@ -200,7 +224,6 @@ impl Tool for LocalShellTool {
                 }
             };
 
-            let timeout_ms = self.timeout_ms;
             let reg = registry.clone();
             let cmd = command.clone();
             let dir = working_dir.map(String::from);
@@ -303,7 +326,14 @@ impl Tool for LocalShellTool {
 
         let mut stdout_buf = String::new();
         let mut stderr_buf = String::new();
-        let sleep = tokio::time::sleep(Duration::from_millis(self.timeout_ms));
+        // timeout_ms == 0 → no fuse: disable the timeout branch and push the
+        // deadline far out (from_millis(0) would fire instantly).
+        let unlimited = timeout_ms == 0;
+        let sleep = tokio::time::sleep(Duration::from_millis(if unlimited {
+            u64::MAX
+        } else {
+            timeout_ms
+        }));
         tokio::pin!(sleep);
 
         // Drive the command: drain streamed lines until both reader tasks finish
@@ -330,12 +360,12 @@ impl Tool for LocalShellTool {
                         None => break,
                     }
                 }
-                _ = &mut sleep => {
+                _ = &mut sleep, if !unlimited => {
                     kill_process_group(pid);
-                    tracing::warn!(command = %command, timeout_ms = self.timeout_ms, "execute_command: timed out, killed process group");
+                    tracing::warn!(command = %command, timeout_ms = timeout_ms, "execute_command: timed out, killed process group");
                     return Ok(vec![Content::text(format!(
                         "[Command Timed Out after {}ms]\ncommand: {}",
-                        self.timeout_ms, command
+                        timeout_ms, command
                     ))]);
                 }
                 _ = ctx.cancel_token.cancelled() => {
@@ -453,7 +483,14 @@ async fn run_background_task(
 
     let mut stdout_buf = String::new();
     let mut stderr_buf = String::new();
-    let sleep = tokio::time::sleep(Duration::from_millis(timeout_ms));
+    // timeout_ms == 0 → run indefinitely: no fuse. (from_millis(0) would fire
+    // instantly, so both the branch guard and the u64::MAX deadline matter.)
+    let unlimited = timeout_ms == 0;
+    let sleep = tokio::time::sleep(Duration::from_millis(if unlimited {
+        u64::MAX
+    } else {
+        timeout_ms
+    }));
     tokio::pin!(sleep);
 
     loop {
@@ -475,7 +512,7 @@ async fn run_background_task(
                     None => break, // all output drained — process exited
                 }
             }
-            _ = &mut sleep => {
+            _ = &mut sleep, if !unlimited => {
                 kill_process_group(pid);
                 tracing::warn!(command = %command, timeout_ms = timeout_ms, "background: timed out");
                 // Drain remaining buffered output
@@ -574,6 +611,7 @@ impl Drop for ProcessGroupGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task_registry::TaskStatus;
     use agent_base::tool::content_text;
 
     #[test]
@@ -746,6 +784,95 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!alive, "grandchild pid {pid} survived the timeout kill");
+    }
+
+    /// Per-call `timeout_ms` must override the tool-level default (foreground).
+    #[tokio::test]
+    async fn test_call_timeout_override() {
+        let tool = LocalShellTool::new(30000);
+        let result = tool
+            .call(
+                &json!({"command": "sleep 30", "timeout_ms": 100}),
+                &ToolContext::for_test(),
+            )
+            .await
+            .unwrap();
+        assert!(content_text(&result).contains("Timed Out"));
+    }
+
+    /// `timeout_ms: 0` means "never kill": a command outliving the tool default
+    /// must finish instead of dying. Guards the from_millis(0) instant-kill
+    /// hazard (0 previously would have meant a 0ms fuse).
+    #[tokio::test]
+    async fn test_call_zero_timeout_is_unlimited() {
+        let tool = LocalShellTool::new(50);
+        let result = tool
+            .call(
+                &json!({"command": "sleep 0.5 && echo done", "timeout_ms": 0}),
+                &ToolContext::for_test(),
+            )
+            .await
+            .unwrap();
+        let text = content_text(&result);
+        assert!(!text.contains("Timed Out"), "0 must disable the fuse: {text}");
+        assert!(text.contains("done"));
+    }
+
+    /// Explicit `timeout_ms` must kill background tasks too — regression test
+    /// for the old code, which ignored the per-call timeout and fused every
+    /// background task at the tool-level default.
+    #[tokio::test]
+    async fn test_background_timeout_override() {
+        let registry = BackgroundTaskRegistry::new(8);
+        let tool = LocalShellTool::new(30000).with_registry(registry.clone());
+        let result = tool
+            .call(
+                &json!({"command": "sleep 30", "background": true, "timeout_ms": 200}),
+                &ToolContext::for_test(),
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(content_text(&result).trim())
+            .expect("background call returns JSON");
+        let tid = v["task_id"].as_str().unwrap().to_string();
+
+        // Poll until terminal — 200ms fuse + kill/drain latency.
+        let mut status = None;
+        for _ in 0..150 {
+            if let Some(snap) = registry.snapshot(&tid) {
+                status = Some(snap.status.clone());
+                if status.as_ref().unwrap().is_terminal() {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(status, Some(BackgroundTaskStatus::TimedOut));
+    }
+
+    /// Background default (no timeout_ms) = unlimited: the task must still be
+    /// Running past the tool-level fuse. This is what keeps dev servers alive
+    /// under background=true instead of dying at the hardcoded 120s.
+    #[tokio::test]
+    async fn test_background_default_runs_indefinitely() {
+        let registry = BackgroundTaskRegistry::new(8);
+        let tool = LocalShellTool::new(300).with_registry(registry.clone());
+        let result = tool
+            .call(
+                &json!({"command": "sleep 30", "background": true}),
+                &ToolContext::for_test(),
+            )
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(content_text(&result).trim()).unwrap();
+        let tid = v["task_id"].as_str().unwrap().to_string();
+
+        // Old behavior (fuse = tool default 300ms) would have killed it here.
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let snap = registry.snapshot(&tid).expect("task registered");
+        assert_eq!(snap.status, BackgroundTaskStatus::Running);
+
+        registry.cancel(&tid); // don't leak the sleeper
     }
 
     #[test]

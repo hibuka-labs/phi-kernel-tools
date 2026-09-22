@@ -59,6 +59,10 @@ pub struct ShellTaskEntry {
     pub command: String,
     /// Working directory.
     pub working_dir: Option<String>,
+    /// Per-call timeout fuse in milliseconds — the fact "does this task have
+    /// a deadline", registered here because the fuse lives with the task.
+    /// `0` = indefinite (daemon-style server/watcher, never auto-killed).
+    pub timeout_ms: u64,
     /// Current status.
     status: BackgroundTaskStatus,
     /// Bounded stdout buffer (head 8K + tail 24K).
@@ -89,11 +93,18 @@ impl TaskEntry for ShellTaskEntry {
 
 impl ShellTaskEntry {
     /// Creates a new shell task entry in Running state.
-    fn new(id: String, command: String, working_dir: Option<String>, pgid: Option<u32>) -> Self {
+    fn new(
+        id: String,
+        command: String,
+        working_dir: Option<String>,
+        pgid: Option<u32>,
+        timeout_ms: u64,
+    ) -> Self {
         Self {
             id,
             command,
             working_dir,
+            timeout_ms,
             status: BackgroundTaskStatus::Running,
             stdout: String::new(),
             stderr: String::new(),
@@ -160,6 +171,8 @@ pub struct BackgroundTaskSnapshot {
     pub id: String,
     pub command: String,
     pub working_dir: Option<String>,
+    /// Per-call timeout fuse in ms; `0` = indefinite (daemon-style).
+    pub timeout_ms: u64,
     pub status: BackgroundTaskStatus,
     pub started_at: Instant,
     pub finished_at: Option<Instant>,
@@ -175,6 +188,7 @@ impl BackgroundTaskSnapshot {
             id: snap.id.clone(),
             command: snap.entry.command.clone(),
             working_dir: snap.entry.working_dir.clone(),
+            timeout_ms: snap.entry.timeout_ms,
             status: snap.entry.status().clone(),
             started_at: snap.created_at,
             finished_at: snap.finished_at,
@@ -216,6 +230,10 @@ impl BackgroundTaskRegistry {
 
     /// Register a new background task.
     ///
+    /// `timeout_ms` is the kill-fuse the executor will arm (`0` = indefinite,
+    /// daemon-style); it is recorded on the entry so the UI can tell "waiting
+    /// on a bounded job" apart from "a server is just running".
+    ///
     /// Returns `Ok(task_id)` (format `bg_{short_uuid}`) or
     /// `Err("too many background tasks")` if the limit is reached.
     pub fn register(
@@ -224,6 +242,7 @@ impl BackgroundTaskRegistry {
         working_dir: Option<&str>,
         cancel_token: CancellationToken,
         pgid: Option<u32>,
+        timeout_ms: u64,
     ) -> Result<String, String> {
         let id = format!("bg_{}", &Uuid::new_v4().simple().to_string()[..8]);
         let entry = ShellTaskEntry::new(
@@ -231,6 +250,7 @@ impl BackgroundTaskRegistry {
             command.to_string(),
             working_dir.map(String::from),
             pgid,
+            timeout_ms,
         );
 
         self.inner
@@ -625,7 +645,7 @@ mod tests {
     #[test]
     fn register_returns_bg_id() {
         let (reg, token) = setup(4);
-        let id = reg.register("echo hi", None, token, None).unwrap();
+        let id = reg.register("echo hi", None, token, None, 0).unwrap();
         assert!(id.starts_with("bg_"), "id should start with bg_: {id}");
         assert_eq!(id.len(), 11, "bg_ + 8 hex chars = 11");
     }
@@ -646,11 +666,22 @@ mod tests {
     #[test]
     fn register_records_command_and_dir() {
         let (reg, token) = setup(4);
-        let id = reg.register("ls -la", Some("/tmp"), token, None).unwrap();
+        let id = reg.register("ls -la", Some("/tmp"), token, None, 120_000).unwrap();
         let snap = reg.snapshot(&id).unwrap();
         assert_eq!(snap.command, "ls -la");
         assert_eq!(snap.working_dir.as_deref(), Some("/tmp"));
+        assert_eq!(snap.timeout_ms, 120_000, "timeout fuse must be recorded");
         assert_eq!(snap.status, BackgroundTaskStatus::Running);
+    }
+
+    #[test]
+    fn register_records_indefinite_daemon_as_zero_timeout() {
+        // timeout_ms == 0 is the daemon marker ("start and leave alone") —
+        // the UI classifies on it, so it must survive registration verbatim.
+        let (reg, token) = setup(4);
+        let id = reg.register("mvn spring-boot:run", None, token, None, 0).unwrap();
+        let snap = reg.snapshot(&id).unwrap();
+        assert_eq!(snap.timeout_ms, 0, "0 = indefinite, never reinterpreted");
     }
 
     #[test]
@@ -659,9 +690,9 @@ mod tests {
         let t1 = CancellationToken::new();
         let t2 = CancellationToken::new();
         let t3 = CancellationToken::new();
-        reg.register("cmd1", None, t1, None).unwrap();
-        reg.register("cmd2", None, t2, None).unwrap();
-        let err = reg.register("cmd3", None, t3, None).unwrap_err();
+        reg.register("cmd1", None, t1, None, 0).unwrap();
+        reg.register("cmd2", None, t2, None, 0).unwrap();
+        let err = reg.register("cmd3", None, t3, None, 0).unwrap_err();
         assert!(err.contains("too many"));
     }
 
@@ -671,10 +702,10 @@ mod tests {
         let t1 = CancellationToken::new();
         let t2 = CancellationToken::new();
         let t3 = CancellationToken::new();
-        let id1 = reg.register("cmd1", None, t1, None).unwrap();
-        reg.register("cmd2", None, t2, None).unwrap();
+        let id1 = reg.register("cmd1", None, t1, None, 0).unwrap();
+        reg.register("cmd2", None, t2, None, 0).unwrap();
         reg.finish(&id1, Some(0));
-        reg.register("cmd3", None, t3, None).unwrap();
+        reg.register("cmd3", None, t3, None, 0).unwrap();
     }
 
     // ── finish / update_status ──
@@ -682,7 +713,7 @@ mod tests {
     #[test]
     fn finish_sets_done_and_exit_code() {
         let (reg, token) = setup(4);
-        let id = reg.register("cmd", None, token, None).unwrap();
+        let id = reg.register("cmd", None, token, None, 0).unwrap();
         reg.finish(&id, Some(42));
         let snap = reg.snapshot(&id).unwrap();
         assert_eq!(snap.status, BackgroundTaskStatus::Done);
@@ -693,7 +724,7 @@ mod tests {
     #[test]
     fn terminal_state_protection() {
         let (reg, token) = setup(4);
-        let id = reg.register("cmd", None, token, None).unwrap();
+        let id = reg.register("cmd", None, token, None, 0).unwrap();
         reg.finish(&id, Some(0));
         // Try to update to Error — should be ignored.
         reg.set_error(&id, "boom".into());
@@ -706,7 +737,7 @@ mod tests {
     #[test]
     fn snapshot_all_gc_removes_old_entries() {
         let (reg, token) = setup(4);
-        let id = reg.register("cmd", None, token, None).unwrap();
+        let id = reg.register("cmd", None, token, None, 0).unwrap();
         reg.finish(&id, Some(0));
 
         // With long TTL, should still be present.
