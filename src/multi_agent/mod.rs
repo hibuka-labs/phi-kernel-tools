@@ -441,7 +441,9 @@ mod tests {
         // D3/发现9：成功消息回显实际能力面（默认省略 tools = read_only；
         // fixture 无业务工具 → registered 列表为空是预期的诚实回显）。
         assert!(
-            result.message.starts_with("Agent spawned successfully (tools: read_only;"),
+            result
+                .message
+                .starts_with("Agent spawned successfully (tools: read_only;"),
             "echo must name the requested face and the registered set: {}",
             result.message
         );

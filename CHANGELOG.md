@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-27
+
+### Added
+- **Per-call `timeout_ms` on `execute_command`** (`0` = never kill): background
+  jobs default to indefinite (daemon-style servers/watchers), foreground keeps
+  the tool-level fuse; an explicit `timeout_ms` arms a per-call kill fuse.
+  Registry entries and snapshots carry `timeout_ms` so the TUI can tell bounded
+  jobs from daemons. Tool description rewritten around the two task shapes.
+- **`spawn_agent` `tools` parameter** (ReadOnly / Write / researcher / coder /
+  reviewer / tester presets; default read-only) with capability echo (label +
+  actually-registered tool set, `degraded` reason when degraded); `list_agents`
+  exposes `spawned_tools`.
+- Spawn echo marks recycled predecessors ("recycled a finished agent with the
+  same path"); `task_output` gains a scope fence plus a teaching not-found error
+  for sub-agent ids (reports are pushed, not polled).
+
+### Changed
+- Bump `agent-base` to 0.8.0, `agent-works` to 0.9.0.
+
 ## [0.8.0] - 2026-09-18
 
 ### Added

@@ -666,7 +666,9 @@ mod tests {
     #[test]
     fn register_records_command_and_dir() {
         let (reg, token) = setup(4);
-        let id = reg.register("ls -la", Some("/tmp"), token, None, 120_000).unwrap();
+        let id = reg
+            .register("ls -la", Some("/tmp"), token, None, 120_000)
+            .unwrap();
         let snap = reg.snapshot(&id).unwrap();
         assert_eq!(snap.command, "ls -la");
         assert_eq!(snap.working_dir.as_deref(), Some("/tmp"));
@@ -679,7 +681,9 @@ mod tests {
         // timeout_ms == 0 is the daemon marker ("start and leave alone") —
         // the UI classifies on it, so it must survive registration verbatim.
         let (reg, token) = setup(4);
-        let id = reg.register("mvn spring-boot:run", None, token, None, 0).unwrap();
+        let id = reg
+            .register("mvn spring-boot:run", None, token, None, 0)
+            .unwrap();
         let snap = reg.snapshot(&id).unwrap();
         assert_eq!(snap.timeout_ms, 0, "0 = indefinite, never reinterpreted");
     }

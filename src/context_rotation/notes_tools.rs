@@ -610,4 +610,18 @@ mod tests {
         let tools = create_notes_tools(store);
         assert_eq!(tools.len(), 5);
     }
+
+    /// 冒烟：每个工具的 name/description/schema/metadata 都能构建出合法值。
+    /// 这些方法是 LLM 面注册的基础，必须被执行到（覆盖率口径也计入它们）。
+    #[test]
+    fn tool_schema_and_metadata_smoke() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(NotesStore::new(tmp.path(), "test", "main"));
+        for tool in create_notes_tools(store) {
+            assert!(!tool.name().is_empty());
+            assert!(!tool.description().is_empty());
+            assert!(tool.schema().is_object(), "schema must be a JSON object");
+            let _ = tool.metadata();
+        }
+    }
 }

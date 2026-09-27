@@ -1,6 +1,6 @@
 [package]
 name = "phi-kernel-tools"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 description = "Kernel tools for phi-agent — file system, multi-agent, and shell tools"
 license = "MIT"
@@ -18,8 +18,8 @@ context = []
 fuzzing = ["file"]
 
 [dependencies]
-agent-base = { version = "0.7.0" }
-agent-works = { version = "0.8.0", features = ["multi_agent"] }
+agent-base = { version = "0.8.0" }
+agent-works = { version = "0.9.0", features = ["multi_agent"] }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 ignore = "0.4"
@@ -44,3 +44,7 @@ tokio = { version = "1.52", features = ["full"] }
 name = "file_tools"
 harness = false
 required-features = ["file"]
+
+[[test]]
+name = "background_shell_e2e"
+required-features = ["shell"]

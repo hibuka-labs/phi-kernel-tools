@@ -198,11 +198,11 @@ impl TypedTool for SpawnAgentTool {
 
         // D2：schema 缺省 read_only——LLM 面 spawn 永远显式请求能力，
         // 遗留程序化路径的 None 语义不经过这里。
-        let capability = Some(
-            args.tools
-                .map(|t| t.capability())
-                .unwrap_or(ChildToolCapability::ReadOnly),
-        );
+        let requested = args
+            .tools
+            .map(|t| t.capability())
+            .unwrap_or(ChildToolCapability::ReadOnly);
+        let capability = Some(requested);
 
         match self
             .runtime
@@ -239,20 +239,16 @@ impl TypedTool for SpawnAgentTool {
                             // the fact, never a silent takeover (the three
                             // spawn collisions of session
                             // 20260920_5ba1bed4).
-                            msg.push_str(
-                                " (recycled a finished agent with the same path)",
-                            );
+                            msg.push_str(" (recycled a finished agent with the same path)");
                         }
                         if let Some(why) = &echo.degraded_reason {
-                            msg.push_str(&format!(
-                                " (tools degraded to read-only: {why})"
-                            ));
+                            msg.push_str(&format!(" (tools degraded to read-only: {why})"));
                         } else {
                             let registered: Vec<&str> =
                                 echo.registered_tools.iter().map(String::as_str).collect();
                             msg.push_str(&format!(
                                 " (tools: {}; registered: {})",
-                                capability.unwrap().label(),
+                                requested.label(),
                                 registered.join(", ")
                             ));
                         }
@@ -397,7 +393,10 @@ mod tools_spec_tests {
 
     #[test]
     fn tools_spec_maps_to_capabilities() {
-        assert_eq!(ToolsSpec::ReadOnly.capability(), ChildToolCapability::ReadOnly);
+        assert_eq!(
+            ToolsSpec::ReadOnly.capability(),
+            ChildToolCapability::ReadOnly
+        );
         assert_eq!(ToolsSpec::Write.capability(), ChildToolCapability::Write);
         assert_eq!(
             ToolsSpec::Coder.capability(),

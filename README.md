@@ -43,7 +43,7 @@ Or pick specific features:
 
 ```toml
 [dependencies]
-phi-kernel-tools = { version = "0.1.1", features = ["file", "shell"] }
+phi-kernel-tools = { version = "0.9.0", features = ["file", "shell"] }
 ```
 
 ## Usage

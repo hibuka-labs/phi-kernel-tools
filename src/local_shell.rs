@@ -814,7 +814,10 @@ mod tests {
             .await
             .unwrap();
         let text = content_text(&result);
-        assert!(!text.contains("Timed Out"), "0 must disable the fuse: {text}");
+        assert!(
+            !text.contains("Timed Out"),
+            "0 must disable the fuse: {text}"
+        );
         assert!(text.contains("done"));
     }
 
