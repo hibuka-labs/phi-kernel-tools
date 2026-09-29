@@ -267,8 +267,8 @@ async fn gced_task_returns_not_found() {
         .unwrap();
     assert!(content_text(&done_text).contains("\"done\""));
 
-    // Force GC with 0 TTL
-    reg.snapshot_all(Duration::ZERO);
+    // Force GC with 0 TTL (consumed by the wait:true above → swept).
+    reg.gc(Duration::ZERO);
 
     // Query should return not_found
     let not_found_text = out.call(&json!({"task_id": &tid}), &ctx()).await.unwrap();
@@ -276,6 +276,86 @@ async fn gced_task_returns_not_found() {
         content_text(&not_found_text).contains("not_found"),
         "expected not_found after GC: {}",
         content_text(&not_found_text)
+    );
+}
+
+// ── Test 6b: multi-task burst — delayed retrieval beats GC ─────────
+//
+// Issue #35: outputs of a finished burst must stay retrievable until
+// *consumed* by task_output; a delayed reader must never find them gone.
+// Consumption — not the clock — makes an entry GC-eligible.
+
+#[tokio::test]
+async fn burst_delayed_retrieval_full_output_retrievable() {
+    let (reg, shell, out, _cancel) = setup(8, 10_000);
+
+    // N tasks finish in a burst; nobody fetches yet.
+    let mut ids = Vec::new();
+    for i in 0..3 {
+        let bg_result = shell
+            .call(
+                &json!({"command": format!("echo burst_{i}"), "background": true}),
+                &ctx(),
+            )
+            .await
+            .unwrap();
+        ids.push(
+            parse_json(&content_text(&bg_result))["task_id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    while reg.running_count() > 0 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // A sweep long after the old 5-min TTL would have fired keeps
+    // everything: nothing was consumed yet (AC2).
+    reg.gc(Duration::from_secs(1800));
+    assert_eq!(reg.snapshot_all().len(), 3, "unconsumed burst survives");
+
+    // One fetch consumes exactly that task (AC2: swept on the next gc)…
+    let first = out.call(&json!({"task_id": &ids[0]}), &ctx()).await.unwrap();
+    let first_text = content_text(&first);
+    assert!(
+        first_text.contains("burst_0") && first_text.contains("\"done\""),
+        "full output for task 0: {first_text}"
+    );
+    reg.gc(Duration::from_secs(1800));
+    let live: Vec<_> = reg.snapshot_all().into_iter().map(|s| s.id).collect();
+    assert!(!live.contains(&ids[0]), "consumed task swept");
+    assert_eq!(live.len(), 2, "unconsumed siblings kept");
+
+    // …while the delayed reader of the others still gets the full output (AC1).
+    for (i, tid) in ids.iter().enumerate().skip(1) {
+        let text = content_text(&out.call(&json!({"task_id": tid}), &ctx()).await.unwrap());
+        assert!(
+            text.contains(&format!("burst_{i}")) && text.contains("\"done\""),
+            "delayed full output for task {i}: {text}"
+        );
+    }
+
+    // Fallback TTL collects whatever was never fetched (AC2, second half).
+    let orphan = shell
+        .call(
+            &json!({"command": "echo never_fetched", "background": true}),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let oid = parse_json(&content_text(&orphan))["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    while reg.running_count() > 0 {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    reg.gc(Duration::ZERO);
+    let text = content_text(&out.call(&json!({"task_id": &oid}), &ctx()).await.unwrap());
+    assert!(
+        text.contains("not_found"),
+        "unconsumed but past fallback TTL: {text}"
     );
 }
 

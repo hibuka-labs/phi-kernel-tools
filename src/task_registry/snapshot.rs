@@ -19,6 +19,9 @@ pub struct Snapshot<E: TaskEntry + Clone> {
     pub created_at: Instant,
     /// When the task reached a terminal state (if it has).
     pub finished_at: Option<Instant>,
+    /// Whether the business layer has fully consumed this task's output
+    /// (`TaskRegistry::mark_consumed`). Consumed tasks are GC-eligible.
+    pub consumed: bool,
 }
 
 impl<E: TaskEntry + Clone> Snapshot<E> {
@@ -84,6 +87,7 @@ mod tests {
             },
             created_at: Instant::now() - Duration::from_millis(100),
             finished_at: if finished { Some(Instant::now()) } else { None },
+            consumed: false,
         }
     }
 

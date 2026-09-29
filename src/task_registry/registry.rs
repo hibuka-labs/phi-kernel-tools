@@ -32,6 +32,10 @@ pub(crate) struct Slot<E: TaskEntry> {
     pub(crate) cancel_token: CancellationToken,
     pub(crate) created_at: Instant,
     pub(crate) finished_at: Option<Instant>,
+    /// Set when the business layer has fully consumed the task's output
+    /// (e.g. `task_output` returned the terminal result). Consumed tasks are
+    /// GC-eligible immediately; unconsumed ones get a fallback TTL instead.
+    pub(crate) consumed_at: Option<Instant>,
 }
 
 /// Generic task registry.
@@ -126,6 +130,7 @@ impl<E: TaskEntry> TaskRegistry<E> {
             cancel_token,
             created_at: Instant::now(),
             finished_at: None,
+            consumed_at: None,
         };
         map.insert(id.clone(), slot);
         let _ = self.status_tx.send(());
@@ -169,32 +174,61 @@ impl<E: TaskEntry> TaskRegistry<E> {
             entry: slot.entry.clone(),
             created_at: slot.created_at,
             finished_at: slot.finished_at,
+            consumed: slot.consumed_at.is_some(),
         })
     }
 
-    /// Gets snapshots of all tasks, and GC entries finished longer than `gc_ttl`.
+    /// Gets snapshots of all tasks. Pure read — never drops anything.
     ///
-    /// Designed to be called from the TUI tick loop (every 250ms).
-    pub fn snapshot_all(&self, gc_ttl: Duration) -> Vec<Snapshot<E>>
+    /// Designed to be called from the TUI tick loop; pair with [`Self::gc`] so
+    /// the caller always observes a terminal state before it is swept away
+    /// (consume-GC would otherwise race the observer and lose the wake).
+    pub fn snapshot_all(&self) -> Vec<Snapshot<E>>
     where
         E: Clone,
     {
-        let mut map = self.slots.write().unwrap();
-
-        // GC: remove tasks that finished longer than gc_ttl ago.
-        map.retain(|_, slot| match slot.finished_at {
-            Some(finished) => finished.elapsed() < gc_ttl,
-            None => true, // still running — keep
-        });
-
+        let map = self.slots.read().unwrap();
         map.iter()
             .map(|(id, slot)| Snapshot {
                 id: id.clone(),
                 entry: slot.entry.clone(),
                 created_at: slot.created_at,
                 finished_at: slot.finished_at,
+                consumed: slot.consumed_at.is_some(),
             })
             .collect()
+    }
+
+    /// GC sweep: drop entries the consumer has already taken, or that outlived
+    /// the fallback `gc_ttl` since finish — whichever came first.
+    ///
+    /// Running tasks are never dropped. The caller should have processed the
+    /// `snapshot_all()` output for this sweep before calling `gc`.
+    pub fn gc(&self, gc_ttl: Duration) {
+        let mut map = self.slots.write().unwrap();
+        map.retain(|_, slot| match slot.finished_at {
+            None => true, // still running — keep
+            Some(finished) => slot.consumed_at.is_none() && finished.elapsed() < gc_ttl,
+        });
+    }
+
+    /// Marks a task's output as consumed by the business layer (e.g. a
+    /// successful `task_output` retrieval). Idempotent.
+    ///
+    /// Only terminal tasks can be consumed: a partial (still-running) read
+    /// must not make a live daemon GC-eligible. Returns `true` if the task
+    /// exists and is terminal (consumed now or already), `false` otherwise.
+    pub fn mark_consumed(&self, id: &str) -> bool {
+        let mut map = self.slots.write().unwrap();
+        match map.get_mut(id) {
+            Some(slot) if slot.entry.status().is_terminal() => {
+                if slot.consumed_at.is_none() {
+                    slot.consumed_at = Some(Instant::now());
+                }
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Cancels a task.
@@ -465,7 +499,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_all_returns_all_and_gcs() {
+    fn snapshot_all_is_pure_read() {
         let reg = TaskRegistry::<Task>::new(4);
         let id1 = reg
             .register(make_task("t1"), CancellationToken::new())
@@ -475,11 +509,82 @@ mod tests {
             .unwrap();
         reg.update_status(&id1, Status::Done);
 
-        // With very short GC TTL, finished tasks get collected
-        let snaps = reg.snapshot_all(Duration::from_millis(1));
-        std::thread::sleep(Duration::from_millis(10));
-        let snaps2 = reg.snapshot_all(Duration::from_millis(1));
-        assert!(snaps2.len() <= snaps.len());
+        // No gc() call, no TTL — repeated reads never drop anything.
+        let snaps = reg.snapshot_all();
+        let snaps2 = reg.snapshot_all();
+        assert_eq!(snaps.len(), 2);
+        assert_eq!(snaps2.len(), 2);
+        assert!(!snaps2[0].consumed && !snaps2[1].consumed);
+    }
+
+    #[test]
+    fn gc_collects_consumed_and_spares_unconsumed() {
+        // Consume-based GC: a task whose output was taken is collected on the
+        // next sweep even inside the fallback TTL; one left untouched survives.
+        let reg = TaskRegistry::<Task>::new(4);
+        let id_consumed = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        let id_fresh = reg
+            .register(make_task("t2"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id_consumed, Status::Done);
+        reg.update_status(&id_fresh, Status::Done);
+
+        assert!(reg.mark_consumed(&id_consumed));
+        assert!(reg.snapshot(&id_consumed).unwrap().consumed);
+
+        reg.gc(Duration::from_secs(1800));
+        assert!(reg.snapshot(&id_consumed).is_none(), "consumed entry GC'd");
+        assert!(reg.snapshot(&id_fresh).is_some(), "unconsumed survives");
+    }
+
+    #[test]
+    fn gc_collects_unconsumed_after_fallback_ttl() {
+        // The 30-min fallback: an output nobody fetched still doesn't live
+        // forever — but it lives a full TTL past finish (issue #35 AC2).
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.update_status(&id, Status::Done);
+
+        reg.gc(Duration::from_secs(1800));
+        assert!(reg.snapshot(&id).is_some(), "inside TTL: kept");
+
+        // Zero TTL stands in for "fallback TTL has elapsed".
+        reg.gc(Duration::ZERO);
+        assert!(reg.snapshot(&id).is_none(), "past TTL: collected");
+    }
+
+    #[test]
+    fn gc_never_collects_running_tasks() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+        reg.gc(Duration::ZERO);
+        assert!(reg.snapshot(&id).is_some(), "running daemon stays");
+    }
+
+    #[test]
+    fn mark_consumed_terminal_only_and_idempotent() {
+        let reg = TaskRegistry::<Task>::new(4);
+        let id = reg
+            .register(make_task("t1"), CancellationToken::new())
+            .unwrap();
+
+        // A partial (running) read must not make the task GC-eligible.
+        assert!(!reg.mark_consumed(&id), "running task cannot be consumed");
+        assert!(!reg.snapshot(&id).unwrap().consumed);
+        reg.gc(Duration::ZERO);
+        assert!(reg.snapshot(&id).is_some(), "running task survives any TTL");
+
+        reg.update_status(&id, Status::Done);
+        assert!(reg.mark_consumed(&id));
+        assert!(reg.mark_consumed(&id), "idempotent");
+        assert!(reg.snapshot(&id).unwrap().consumed);
+        assert!(!reg.mark_consumed("missing"), "unknown id is a no-op");
     }
 
     #[test]

@@ -179,6 +179,28 @@ pub struct BackgroundTaskSnapshot {
     pub stdout: String,
     pub stderr: String,
     pub exit_code: Option<i32>,
+    /// Whether `task_output` has already returned this task's terminal output
+    /// (consumed). Consumed entries are GC-eligible immediately.
+    pub consumed: bool,
+}
+
+/// The last `max_bytes` bytes of `s`, never cutting a UTF-8 code point.
+///
+/// Returns a suffix of `s` of at most `max_bytes` bytes (measured in the
+/// UTF-8 encoding) aligned to a char boundary. Empty when `s` is empty or
+/// `max_bytes` is zero.
+pub fn tail_utf8(s: &str, max_bytes: usize) -> &str {
+    if max_bytes == 0 || s.is_empty() {
+        return "";
+    }
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
 }
 
 impl BackgroundTaskSnapshot {
@@ -195,7 +217,23 @@ impl BackgroundTaskSnapshot {
             stdout: snap.entry.stdout.clone(),
             stderr: snap.entry.stderr.clone(),
             exit_code: snap.entry.exit_code,
+            consumed: snap.consumed,
         }
+    }
+
+    /// The tail of this task's combined output (stderr after stdout), capped
+    /// to `max_bytes` UTF-8-safe. Used to build wake reports that survive
+    /// registry GC.
+    pub fn output_tail(&self, max_bytes: usize) -> String {
+        let mut combined = self.stdout.clone();
+        if !self.stderr.is_empty() {
+            if !combined.is_empty() && !combined.ends_with('\n') {
+                combined.push('\n');
+            }
+            combined.push_str("[stderr]\n");
+            combined.push_str(&self.stderr);
+        }
+        tail_utf8(&combined, max_bytes).to_string()
     }
 }
 
@@ -314,15 +352,31 @@ impl BackgroundTaskRegistry {
             .map(|snap| BackgroundTaskSnapshot::from_generic(&snap))
     }
 
-    /// Get snapshots of all tasks, and GC entries finished longer than `gc_ttl`.
-    ///
-    /// Designed to be called from the TUI tick loop (every 250ms).
-    pub fn snapshot_all(&self, gc_ttl: Duration) -> Vec<BackgroundTaskSnapshot> {
+    /// Get snapshots of all tasks. Pure read — pair with [`Self::gc`] so a
+    /// terminal state is always observed before it can be swept away.
+    pub fn snapshot_all(&self) -> Vec<BackgroundTaskSnapshot> {
         self.inner
-            .snapshot_all(gc_ttl)
+            .snapshot_all()
             .iter()
             .map(BackgroundTaskSnapshot::from_generic)
             .collect()
+    }
+
+    /// GC sweep: drop consumed entries, or unconsumed ones finished longer
+    /// than `gc_ttl` ago. Running tasks are never dropped.
+    pub fn gc(&self, gc_ttl: Duration) {
+        self.inner.gc(gc_ttl);
+    }
+
+    /// Mark a task's output as consumed (successful terminal retrieval).
+    /// Idempotent; no-op on running tasks. See `TaskRegistry::mark_consumed`.
+    pub fn mark_consumed(&self, id: &str) -> bool {
+        self.inner.mark_consumed(id)
+    }
+
+    /// Count of running (non-terminal) tasks.
+    pub fn running_count(&self) -> usize {
+        self.inner.running_count()
     }
 
     /// Cancel a background task.
@@ -454,7 +508,7 @@ impl Tool for TaskOutputTool {
             "properties": {
                 "task_id": {
                     "type": "string",
-                    "description": "Background task ID from execute_command (bg_* format). Returns error if task was GC'd (5 min TTL)."
+                    "description": "Background task ID from execute_command (bg_* format). Returns error if task was GC'd (consumed via an earlier call, or ~30 min after completion)."
                 },
                 "wait": {
                     "type": "boolean",
@@ -511,10 +565,17 @@ impl Tool for TaskOutputTool {
             let timeout = Duration::from_millis(timeout_ms);
 
             match self.registry.wait(&task_id, timeout).await {
-                Some(snap) => Ok(vec![Content::text(
-                    serde_json::to_string_pretty(&format_status(&snap))
-                        .unwrap_or_else(|_| "{}".to_string()),
-                )]),
+                Some(snap) => {
+                    // Full terminal output delivered — the entry becomes
+                    // GC-eligible. Partial (still-running) reads don't count.
+                    if snap.status.is_terminal() {
+                        self.registry.mark_consumed(&task_id);
+                    }
+                    Ok(vec![Content::text(
+                        serde_json::to_string_pretty(&format_status(&snap))
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    )])
+                }
                 None => Ok(vec![Content::text(format!(
                     "{}",
                     json!({
@@ -525,10 +586,15 @@ impl Tool for TaskOutputTool {
             }
         } else {
             match self.registry.snapshot(&task_id) {
-                Some(snap) => Ok(vec![Content::text(
-                    serde_json::to_string_pretty(&format_status(&snap))
-                        .unwrap_or_else(|_| "{}".to_string()),
-                )]),
+                Some(snap) => {
+                    if snap.status.is_terminal() {
+                        self.registry.mark_consumed(&task_id);
+                    }
+                    Ok(vec![Content::text(
+                        serde_json::to_string_pretty(&format_status(&snap))
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    )])
+                }
                 None => Ok(vec![Content::text(format!(
                     "{}",
                     json!({
@@ -548,7 +614,7 @@ impl Tool for TaskOutputTool {
 /// tasks only, and a sub-agent's report is pushed, never fetched.
 fn not_found_message(task_id: &str) -> String {
     format!(
-        "Task {} not found. It may have been cleaned up after 5 minutes of completion. \
+        "Task {} not found. Its output was already fetched via an earlier task_output call, \n         or the entry was cleaned up ~30 minutes after completion. \
          This registry holds background SHELL tasks only — a spawned sub-agent's \
          report is pushed to you automatically; end your turn to receive it.",
         task_id
@@ -739,17 +805,63 @@ mod tests {
     // ── snapshot_all / GC ──
 
     #[test]
-    fn snapshot_all_gc_removes_old_entries() {
+    fn gc_sweeps_by_consume_then_fallback_ttl() {
         let (reg, token) = setup(4);
         let id = reg.register("cmd", None, token, None, 0).unwrap();
         reg.finish(&id, Some(0));
 
-        // With long TTL, should still be present.
-        let snaps = reg.snapshot_all(Duration::from_secs(60));
-        assert_eq!(snaps.len(), 1);
+        // Pure read keeps it; long TTL keeps it; consumed → swept next gc().
+        assert_eq!(reg.snapshot_all().len(), 1);
+        reg.gc(Duration::from_secs(1800));
+        assert_eq!(reg.snapshot_all().len(), 1);
+        assert!(reg.mark_consumed(&id));
+        reg.gc(Duration::from_secs(1800));
+        assert_eq!(reg.snapshot_all().len(), 0);
+    }
 
-        // With zero TTL, should be GC'd.
-        let snaps = reg.snapshot_all(Duration::ZERO);
-        assert_eq!(snaps.len(), 0);
+    // ── wake tail formatting ──
+
+    #[test]
+    fn tail_utf8_is_capped_and_never_splits_a_code_point() {
+        // 4-byte emoji straddling the byte cut must not panic or mojibake.
+        let s = "日本語テキスト🚀🚀🚀🚀";
+        let t = tail_utf8(s, 7);
+        assert!(t.len() <= 7);
+        assert!(s.ends_with(t), "tail is a suffix");
+        assert!(!t.is_empty());
+
+        assert_eq!(tail_utf8("hello", 100), "hello");
+        assert_eq!(tail_utf8("hello", 0), "");
+        assert_eq!(tail_utf8("", 10), "");
+
+        // Hard cap case: byte length exceeds the cap but result stays valid.
+        let big = "あ".repeat(100);
+        let t = tail_utf8(&big, 10);
+        assert!(t.len() <= 10);
+        assert!(t.len() >= 9, "clamped to the boundary right after the cut");
+    }
+
+    #[test]
+    fn output_tail_merges_stdout_and_stderr_with_cap() {
+        let snap = BackgroundTaskSnapshot {
+            id: "bg_x".into(),
+            command: "cmd".into(),
+            working_dir: None,
+            timeout_ms: 0,
+            status: BackgroundTaskStatus::Done,
+            started_at: Instant::now(),
+            finished_at: Some(Instant::now()),
+            stdout: "line1\nline2\n".into(),
+            stderr: "boom\n".into(),
+            exit_code: Some(0),
+            consumed: false,
+        };
+        let tail = snap.output_tail(1024);
+        assert!(tail.contains("line1"), "stdout kept: {tail}");
+        assert!(tail.contains("[stderr]"), "stderr section marked");
+        assert!(tail.contains("boom"), "stderr kept");
+
+        let capped = snap.output_tail(6);
+        assert!(capped.len() <= 6, "cap enforced: {:?}", capped);
     }
 }
