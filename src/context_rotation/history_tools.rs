@@ -326,9 +326,12 @@ impl Tool for HistoryReadItemTool {
             .read_item(window_id, item_id, Some(offset_chars), Some(limit_chars))
         {
             Some((content, total_len)) => {
-                let end = offset_chars + content.len();
-                let header = if offset_chars > 0 || end < total_len {
-                    format!("[chars {}..{}/{}]\n", offset_chars, end, total_len)
+                // Character arithmetic throughout: `content.len()` is bytes,
+                // but the pagination contract (and the header below) is chars.
+                let start = offset_chars.min(total_len);
+                let end = start + content.chars().count();
+                let header = if start > 0 || end < total_len {
+                    format!("[chars {}..{}/{}]\n", start, end, total_len)
                 } else {
                     String::new()
                 };

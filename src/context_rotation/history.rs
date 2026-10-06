@@ -316,13 +316,18 @@ impl HistoryStore {
         let rec = records.into_iter().find(|r| r.index == item_id)?;
 
         let content = rec.content;
-        let total_len = content.len();
+        // Characters, not bytes: archived messages are largely CJK, and a byte
+        // range that lands mid-sequence panics. The parameters document a
+        // character range, so count characters end to end (including `total`,
+        // which callers print as `[chars a..b/total]`).
+        let total_len = content.chars().count();
         let start = offset_chars.unwrap_or(0).min(total_len);
         let end = match limit_chars {
             Some(limit) => (start + limit).min(total_len),
             None => total_len,
         };
-        Some((content[start..end].to_string(), total_len))
+        let slice: String = content.chars().skip(start).take(end - start).collect();
+        Some((slice, total_len))
     }
 
     /// Search content across windows.
@@ -667,6 +672,21 @@ mod tests {
         let (content, total_len) = store.read_item(1, 0, Some(6), Some(5)).unwrap();
         assert_eq!(content, "world");
         assert_eq!(total_len, 11);
+    }
+
+    #[test]
+    fn read_item_offset_and_limit_count_characters() {
+        let tmp = TempDir::new().unwrap();
+        let store = HistoryStore::new(tmp.path(), "test");
+        store
+            .archive_window(1, &[ChatMessage::user("记忆文件测试")])
+            .unwrap();
+
+        // 6 chars / 18 bytes: a byte offset of 2 would land mid-sequence and
+        // panic, so the range must be honoured in characters.
+        let (content, total_len) = store.read_item(1, 0, Some(2), Some(3)).unwrap();
+        assert_eq!(content, "文件测");
+        assert_eq!(total_len, 6);
     }
 
     #[test]
