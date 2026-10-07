@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-07
+
+### Fixed
+- `read_item` offsets count characters, not bytes (context rotation)
+- Background-task output stays reachable until consumed (#35)
+
 ## [0.9.0] - 2026-09-27
 
 ### Added

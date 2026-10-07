@@ -316,7 +316,10 @@ async fn burst_delayed_retrieval_full_output_retrievable() {
     assert_eq!(reg.snapshot_all().len(), 3, "unconsumed burst survives");
 
     // One fetch consumes exactly that task (AC2: swept on the next gc)…
-    let first = out.call(&json!({"task_id": &ids[0]}), &ctx()).await.unwrap();
+    let first = out
+        .call(&json!({"task_id": &ids[0]}), &ctx())
+        .await
+        .unwrap();
     let first_text = content_text(&first);
     assert!(
         first_text.contains("burst_0") && first_text.contains("\"done\""),
