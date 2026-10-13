@@ -91,6 +91,9 @@ pub struct ListFilesTool {
     /// (e.g. a coding agent ignoring `target/`, `node_modules/`) inject their
     /// own list via [`ListFilesTool::with_excludes`].
     excludes: Vec<String>,
+    /// Opt-in path confinement (see `resolve_path`): reject absolute paths and
+    /// `..` escapes from `workspace_root`. Off by default.
+    confined: bool,
 }
 
 impl ListFilesTool {
@@ -103,7 +106,14 @@ impl ListFilesTool {
         Self {
             workspace_root,
             excludes,
+            confined: false,
         }
+    }
+
+    /// Enable path confinement: paths must stay inside the workspace root.
+    pub fn with_confinement(mut self) -> Self {
+        self.confined = true;
+        self
     }
 }
 
@@ -179,7 +189,7 @@ impl Tool for ListFilesTool {
             .unwrap_or(DEFAULT_LIMIT);
 
         // Resolve and validate the path
-        let dir_path = match resolve_path(&self.workspace_root, &path_str) {
+        let dir_path = match resolve_path(&self.workspace_root, &path_str, self.confined) {
             Ok(p) => p,
             Err(e) => {
                 return Ok(vec![Content::text(format!("[Error]: {}", e))]);

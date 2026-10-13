@@ -35,11 +35,23 @@ struct Edit {
 /// - Original line endings (`\n` vs `\r\n`) are preserved
 pub struct EditFileTool {
     workspace_root: PathBuf,
+    /// Opt-in path confinement (see `resolve_path`): reject absolute paths and
+    /// `..` escapes from `workspace_root`. Off by default.
+    confined: bool,
 }
 
 impl EditFileTool {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self {
+            workspace_root,
+            confined: false,
+        }
+    }
+
+    /// Enable path confinement: paths must stay inside the workspace root.
+    pub fn with_confinement(mut self) -> Self {
+        self.confined = true;
+        self
     }
 }
 
@@ -137,7 +149,7 @@ impl Tool for EditFileTool {
         }
 
         // Resolve and validate the path
-        let file_path = match resolve_path(&self.workspace_root, &path_str) {
+        let file_path = match resolve_path(&self.workspace_root, &path_str, self.confined) {
             Ok(p) => p,
             Err(e) => {
                 return Ok(error_output(&format!("Path error: {}", e), &path_str));

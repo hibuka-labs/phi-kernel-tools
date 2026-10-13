@@ -15,11 +15,23 @@ const MAX_FILE_SIZE: usize = 1_048_576;
 /// existing files are not overwritten unless `overwrite: true` is set.
 pub struct WriteFileTool {
     workspace_root: PathBuf,
+    /// Opt-in path confinement (see `resolve_path`): reject absolute paths and
+    /// `..` escapes from `workspace_root`. Off by default.
+    confined: bool,
 }
 
 impl WriteFileTool {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self {
+            workspace_root,
+            confined: false,
+        }
+    }
+
+    /// Enable path confinement: paths must stay inside the workspace root.
+    pub fn with_confinement(mut self) -> Self {
+        self.confined = true;
+        self
     }
 }
 
@@ -101,7 +113,7 @@ impl Tool for WriteFileTool {
         }
 
         // Resolve and validate the path
-        let file_path = match resolve_path(&self.workspace_root, &path_str) {
+        let file_path = match resolve_path(&self.workspace_root, &path_str, self.confined) {
             Ok(p) => p,
             Err(e) => {
                 return Ok(vec![Content::text(format!("[Error]: {}", e))]);

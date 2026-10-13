@@ -15,11 +15,23 @@ const DEFAULT_LIMIT: usize = 2000;
 /// `..` (no sandbox). Safety is the approval layer.
 pub struct ReadFileTool {
     workspace_root: PathBuf,
+    /// Opt-in path confinement (see `resolve_path`): reject absolute paths and
+    /// `..` escapes from `workspace_root`. Off by default.
+    confined: bool,
 }
 
 impl ReadFileTool {
     pub fn new(workspace_root: PathBuf) -> Self {
-        Self { workspace_root }
+        Self {
+            workspace_root,
+            confined: false,
+        }
+    }
+
+    /// Enable path confinement: paths must stay inside the workspace root.
+    pub fn with_confinement(mut self) -> Self {
+        self.confined = true;
+        self
     }
 }
 
@@ -97,7 +109,7 @@ impl Tool for ReadFileTool {
             .unwrap_or(DEFAULT_LIMIT);
 
         // Resolve and validate the path
-        let file_path = match resolve_path(&self.workspace_root, &path_str) {
+        let file_path = match resolve_path(&self.workspace_root, &path_str, self.confined) {
             Ok(p) => p,
             Err(e) => {
                 return Ok(vec![Content::text(format!("[Error]: {}", e))]);
