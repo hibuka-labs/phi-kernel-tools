@@ -142,7 +142,13 @@ impl ShellTaskEntry {
         self.child_pgid
     }
 
-    /// Bounds a buffer to head 8K + tail 24K chars.
+    /// Bounds a buffer to head 8K + tail 24K bytes, sliced at char boundaries.
+    ///
+    /// The old version mixed units — byte guard, then `char_count - TAIL_LIMIT`
+    /// — which underflowed on multibyte-heavy content (CJK is 3 bytes/char, so
+    /// \>32K bytes could still be <24K chars): panic in debug builds, silently
+    /// dropped tail in release (2026-10-12 实坑). The panic fired while the
+    /// registry lock was held, poisoning it for every later append.
     fn bound_buffer(buf: &mut String) {
         const HEAD_LIMIT: usize = 8 * 1024;
         const TAIL_LIMIT: usize = 24 * 1024;
@@ -152,12 +158,16 @@ impl ShellTaskEntry {
             return;
         }
 
-        let head: String = buf.chars().take(HEAD_LIMIT).collect();
-        let tail: String = {
-            let char_count = buf.chars().count();
-            buf.chars().skip(char_count - TAIL_LIMIT).collect()
-        };
-        *buf = format!("{head}{MARKER}{tail}");
+        let mut head_end = HEAD_LIMIT.min(buf.len());
+        while head_end > 0 && !buf.is_char_boundary(head_end) {
+            head_end -= 1;
+        }
+        let mut tail_start = buf.len().saturating_sub(TAIL_LIMIT);
+        while tail_start < buf.len() && !buf.is_char_boundary(tail_start) {
+            tail_start += 1;
+        }
+        let bounded = format!("{}{MARKER}{}", &buf[..head_end], &buf[tail_start..]);
+        *buf = bounded;
     }
 }
 
@@ -863,5 +873,41 @@ mod tests {
 
         let capped = snap.output_tail(6);
         assert!(capped.len() <= 6, "cap enforced: {:?}", capped);
+    }
+
+    /// 多字节重负载不得下溢（旧实现 `char_count - TAIL_LIMIT` 在
+    /// 字节>32K 但字符<24K 时 usize 下溢：debug panic / release 丢尾）。
+    #[test]
+    fn bound_buffer_multibyte_heavy_does_not_underflow() {
+        // 每行 40 个汉字 = 120 字节 / 40 字符；1000 行 = 120KB 字节 / 40K 字符。
+        // 字符数 > 32K 也会触发 bounding——再压一档到字符 < 24K 的临界组合：
+        // 200 行 = 24KB 字节（不过界），改用混合行长保证字节过界、字符不足。
+        let line = "あ".repeat(40); // 40 chars, 120 bytes
+        let mut buf = String::new();
+        for _ in 0..300 {
+            buf.push_str(&line);
+            buf.push('\n');
+        } // ≈36KB bytes, ≈12.3K chars: 旧实现在此 panic/丢尾
+        let total_chars = buf.chars().count();
+        assert!(buf.len() > 32 * 1024, "byte guard must fire");
+        assert!(total_chars < 24 * 1024, "char count below old TAIL_LIMIT");
+
+        ShellTaskEntry::bound_buffer(&mut buf);
+
+        assert!(buf.len() < 40 * 1024, "bounded: {} bytes", buf.len());
+        assert!(buf.contains("...[truncated]..."), "marker present");
+        assert!(buf.ends_with(&(line.clone() + "\n")), "tail kept");
+        assert!(buf.starts_with(&line), "head kept");
+    }
+
+    #[test]
+    fn bound_buffer_ascii_keeps_head_and_tail() {
+        let line = "abcdefghij\n".to_string(); // 11 bytes
+        let mut buf = line.repeat(5000); // 55KB
+        ShellTaskEntry::bound_buffer(&mut buf);
+        assert!(buf.len() <= 8 * 1024 + 24 * 1024 + 32, "bounded");
+        assert!(buf.starts_with("abcdefghij"), "head kept");
+        assert!(buf.contains("...[truncated]..."), "marker present");
+        assert!(buf.ends_with("abcdefghij\n"), "tail kept");
     }
 }

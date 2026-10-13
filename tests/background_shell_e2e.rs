@@ -434,3 +434,88 @@ async fn background_output_is_captured() {
     assert!(stdout.contains("line2"), "stdout missing line2: {stdout}");
     assert!(stdout.contains("line3"), "stdout missing line3: {stdout}");
 }
+
+// ── Test 9: invalid UTF-8 mid-stream must not kill capture ─────────
+//
+// 回归（2026-10-12）：捕获端曾用严格 `lines()` 解码，一次解码错误被当成 EOF，
+// 读者任务退出 → 读端关闭 → 子进程后续写入 EPIPE/SIGPIPE（cargo test 列测试
+// 清单报 "BrokenPipe"，exit 101）。实坑源头是 bash 3.2 在 UTF-8 locale 下
+// `$VAR` 紧贴全角字符吞字节，产出非法 UTF-8。修复改为 `read_until` + lossy
+// 解码：坏字节变 U+FFFD，之后的行必须继续被捕获，子进程必须正常退出。
+
+#[tokio::test]
+async fn bg_capture_survives_invalid_utf8_midstream() {
+    let (_reg, shell, out, _cancel) = setup(4, 10_000);
+
+    let bg_result = shell
+        .call(
+            &json!({"command": "echo BEFORE_UTF8; printf 'bad \\377\\376 bytes\\n'; echo AFTER_UTF8; echo DONE_MARKER", "background": true}),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let tid = parse_json(&content_text(&bg_result))["task_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let done_text = out
+        .call(
+            &json!({"task_id": &tid, "wait": true, "timeout_ms": 5000}),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let done_json = parse_json(&content_text(&done_text));
+    assert_eq!(
+        done_json["status"],
+        "done",
+        "task should complete: {}",
+        content_text(&done_text)
+    );
+    assert_eq!(
+        done_json["exit_code"],
+        0,
+        "child must not die with EPIPE/SIGPIPE: {}",
+        content_text(&done_text)
+    );
+    let stdout = done_json["stdout"].as_str().unwrap();
+    assert!(
+        stdout.contains("BEFORE_UTF8"),
+        "pre-bad-bytes lines missing: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("AFTER_UTF8"),
+        "capture died after invalid UTF-8: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("DONE_MARKER"),
+        "capture died before tail: {stdout:?}"
+    );
+}
+
+#[tokio::test]
+async fn fg_capture_survives_invalid_utf8_midstream() {
+    let (_reg, shell, _out, _cancel) = setup(4, 10_000);
+
+    let result = shell
+        .call(
+            &json!({"command": "echo BEFORE_UTF8; printf 'bad \\377\\376 bytes\\n'; echo AFTER_UTF8; echo DONE_MARKER"}),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    let text = content_text(&result);
+    assert!(
+        text.contains("BEFORE_UTF8"),
+        "pre-bad-bytes lines missing: {text:?}"
+    );
+    assert!(
+        text.contains("AFTER_UTF8"),
+        "fg capture died after invalid UTF-8: {text:?}"
+    );
+    assert!(
+        text.contains("DONE_MARKER"),
+        "fg capture died before tail: {text:?}"
+    );
+}
