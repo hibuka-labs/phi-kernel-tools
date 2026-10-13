@@ -302,26 +302,10 @@ impl Tool for LocalShellTool {
         let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
 
         if let Some(stdout) = stdout {
-            let tx = line_tx.clone();
-            tokio::spawn(async move {
-                let mut lines = tokio::io::BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send((false, line)).is_err() {
-                        break;
-                    }
-                }
-            });
+            tokio::spawn(forward_lines(stdout, false, line_tx.clone()));
         }
         if let Some(stderr) = stderr {
-            let tx = line_tx;
-            tokio::spawn(async move {
-                let mut lines = tokio::io::BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send((true, line)).is_err() {
-                        break;
-                    }
-                }
-            });
+            tokio::spawn(forward_lines(stderr, true, line_tx));
         }
 
         let mut stdout_buf = String::new();
@@ -408,6 +392,46 @@ impl Tool for LocalShellTool {
     }
 }
 
+/// Stream a child pipe's lines into `tx`, tagged `is_stderr`, until EOF.
+///
+/// Output bytes are decoded **lossily** — a strict `lines()` reader used to
+/// treat a decode error as EOF, which dropped the read end mid-run and made
+/// the child's later writes die with EPIPE/SIGPIPE (2026-10-12 实坑: bash 3.2
+/// 在 UTF-8 locale 下 `$VAR` 紧贴全角字符会吞掉「变量值+多字节首字节」，
+/// release.sh 输出非法 UTF-8，cargo test 撞 "BrokenPipe: listing tests").
+/// Bad bytes become U+FFFD and the pipe stays open; only EOF or a real I/O
+/// error ends the stream.
+async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    is_stderr: bool,
+    tx: tokio::sync::mpsc::UnboundedSender<(bool, String)>,
+) {
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf).await {
+            Ok(0) => break, // EOF — the child closed its end of the pipe.
+            Ok(_) => {
+                if buf.ends_with(b"\n") {
+                    buf.pop();
+                    if buf.ends_with(b"\r") {
+                        buf.pop();
+                    }
+                }
+                let line = String::from_utf8_lossy(&buf).into_owned();
+                if tx.send((is_stderr, line)).is_err() {
+                    break; // receiver gone: task finished/cancelled
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, is_stderr, "capture: pipe read failed, closing stream");
+                break;
+            }
+        }
+    }
+}
+
 /// Background executor: spawns the command, streams output to the registry,
 /// and handles timeout / cancellation / normal completion.
 ///
@@ -459,26 +483,10 @@ async fn run_background_task(
     let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
 
     if let Some(stdout) = stdout {
-        let tx = line_tx.clone();
-        tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if tx.send((false, line)).is_err() {
-                    break;
-                }
-            }
-        });
+        tokio::spawn(forward_lines(stdout, false, line_tx.clone()));
     }
     if let Some(stderr) = stderr {
-        let tx = line_tx;
-        tokio::spawn(async move {
-            let mut lines = tokio::io::BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if tx.send((true, line)).is_err() {
-                    break;
-                }
-            }
-        });
+        tokio::spawn(forward_lines(stderr, true, line_tx));
     }
 
     let mut stdout_buf = String::new();
