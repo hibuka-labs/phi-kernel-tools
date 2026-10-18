@@ -141,9 +141,13 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
 
-        // Absolute paths pass through as-is.
+        // Absolute paths are allowed in open mode. Existing paths come back
+        // canonicalized (symlink-safe), so compare against the canonical form
+        // — on macOS `/etc` itself is a symlink into `/private/etc`.
         let abs = resolve_path(root, "/etc/hosts", false).unwrap();
-        assert_eq!(abs, std::path::PathBuf::from("/etc/hosts"));
+        let expected = std::path::PathBuf::from("/etc/hosts");
+        let expected = expected.canonicalize().unwrap_or(expected);
+        assert_eq!(abs, expected);
 
         // `..` escapes are allowed in open mode (approval layer is the guard).
         let escaped = resolve_path(root, "../outside.md", false).unwrap();

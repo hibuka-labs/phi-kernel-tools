@@ -223,8 +223,9 @@ async fn phimint_legacy_wire_shape_spawns_end_to_end() {
     let text = agent_base::tool::content_text(&content);
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
     assert_eq!(v["agent_path"], "root/slice_1");
-    // D3/发现9：回显实际能力面（省略 tools = read_only；fixture 无业务工具
-    // → registered 为空是预期的诚实回显）。
+    // D3/finding 9: the message echoes the actual capability face (omitting
+    // tools = read_only; the fixture has no business tools → an empty
+    // registered list is the expected honest echo).
     assert_eq!(
         v["message"],
         "Agent spawned successfully (tools: read_only; registered: )"

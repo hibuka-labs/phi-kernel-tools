@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-18
+
+### Added
+- **Opt-in path confinement for the file tools** — restrict file reads/writes
+  to a configured root.
+- **Context rotation keeps the lossless `ChatMessage`** in `MessageRecord`, so
+  rotated history can be rebuilt without re-parsing display text.
+
+### Fixed
+- Local shell decodes child pipe output lossily: invalid UTF-8 no longer kills
+  the capture pipe (the forwarder treated strict line decoding EOF as EPIPE).
+- Background shell slices the bounded output buffer at char boundaries — no
+  more panic/dropped tail when the cut lands mid-CJK.
+
 ## [0.9.1] - 2026-10-07
 
 ### Fixed

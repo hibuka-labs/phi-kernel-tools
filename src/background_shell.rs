@@ -25,7 +25,7 @@ use crate::task_registry::{TaskEntry, TaskRegistry as GenericRegistry, TaskStatu
 
 // ── Shell-specific types ──────────────────────────────────────────────
 
-/// 后台任务状态（终态不可逆：一旦进入 Cancelled/TimedOut/Error，不再变化）
+/// Background task status (terminal states are final: once Cancelled/TimedOut/Error is reached, the status never changes).
 #[derive(Clone, Debug, PartialEq)]
 pub enum BackgroundTaskStatus {
     Running,
@@ -50,7 +50,7 @@ impl TaskStatus for BackgroundTaskStatus {
     }
 }
 
-/// Shell 任务条目（业务层实现 TaskEntry）
+/// Shell task entry (business layer implements `TaskEntry`).
 #[derive(Debug, Clone)]
 pub struct ShellTaskEntry {
     /// Task identifier (bg_* format).
@@ -147,7 +147,7 @@ impl ShellTaskEntry {
     /// The old version mixed units — byte guard, then `char_count - TAIL_LIMIT`
     /// — which underflowed on multibyte-heavy content (CJK is 3 bytes/char, so
     /// \>32K bytes could still be <24K chars): panic in debug builds, silently
-    /// dropped tail in release (2026-10-12 实坑). The panic fired while the
+    /// dropped tail in release (2026-10-12 real incident). The panic fired while the
     /// registry lock was held, poisoning it for every later append.
     fn bound_buffer(buf: &mut String) {
         const HEAD_LIMIT: usize = 8 * 1024;
@@ -173,7 +173,7 @@ impl ShellTaskEntry {
 
 // ── Backward-compatible types ─────────────────────────────────────────
 
-/// 后台任务快照（用于查询，bounded 输出缓冲）
+/// Background task snapshot (for queries; bounded output buffers).
 ///
 /// This provides backward compatibility with the TUI layer.
 #[derive(Clone, Debug)]
@@ -249,7 +249,7 @@ impl BackgroundTaskSnapshot {
 
 // ── Registry wrapper ──────────────────────────────────────────────────
 
-/// 共享后台任务注册表。
+/// Shared background task registry.
 ///
 /// Wraps the generic `TaskRegistry` with shell-specific convenience methods.
 /// Constructed via `new(max_tasks)` and shared as `Arc<BackgroundTaskRegistry>`.
@@ -709,7 +709,7 @@ impl Tool for TaskCancelTool {
 mod tests {
     use super::*;
 
-    /// 辅助：构造一个 registry + cancel token。
+    /// Helper: build a registry + cancel token.
     fn setup(max_tasks: usize) -> (Arc<BackgroundTaskRegistry>, CancellationToken) {
         let reg = BackgroundTaskRegistry::new(max_tasks);
         let token = CancellationToken::new();
@@ -875,19 +875,21 @@ mod tests {
         assert!(capped.len() <= 6, "cap enforced: {:?}", capped);
     }
 
-    /// 多字节重负载不得下溢（旧实现 `char_count - TAIL_LIMIT` 在
-    /// 字节>32K 但字符<24K 时 usize 下溢：debug panic / release 丢尾）。
+    /// Multibyte-heavy payloads must not underflow (the old `char_count - TAIL_LIMIT`
+    /// underflowed usize when bytes >32K but chars <24K: debug panic / release
+    /// silently dropped the tail).
     #[test]
     fn bound_buffer_multibyte_heavy_does_not_underflow() {
-        // 每行 40 个汉字 = 120 字节 / 40 字符；1000 行 = 120KB 字节 / 40K 字符。
-        // 字符数 > 32K 也会触发 bounding——再压一档到字符 < 24K 的临界组合：
-        // 200 行 = 24KB 字节（不过界），改用混合行长保证字节过界、字符不足。
+        // 40 CJK chars per line = 120 bytes / 40 chars; 1000 lines = 120KB bytes / 40K chars.
+        // A char count > 32K would also trigger bounding — so squeeze down to the
+        // critical mix where chars stay < 24K: 200 lines = 24KB bytes (not over the
+        // limit), use mixed line lengths so bytes cross the limit while chars don't.
         let line = "あ".repeat(40); // 40 chars, 120 bytes
         let mut buf = String::new();
         for _ in 0..300 {
             buf.push_str(&line);
             buf.push('\n');
-        } // ≈36KB bytes, ≈12.3K chars: 旧实现在此 panic/丢尾
+        } // ≈36KB bytes, ≈12.3K chars: the old impl panicked / dropped the tail here
         let total_chars = buf.chars().count();
         assert!(buf.len() > 32 * 1024, "byte guard must fire");
         assert!(total_chars < 24 * 1024, "char count below old TAIL_LIMIT");

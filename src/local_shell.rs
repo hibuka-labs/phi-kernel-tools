@@ -396,9 +396,10 @@ impl Tool for LocalShellTool {
 ///
 /// Output bytes are decoded **lossily** — a strict `lines()` reader used to
 /// treat a decode error as EOF, which dropped the read end mid-run and made
-/// the child's later writes die with EPIPE/SIGPIPE (2026-10-12 实坑: bash 3.2
-/// 在 UTF-8 locale 下 `$VAR` 紧贴全角字符会吞掉「变量值+多字节首字节」，
-/// release.sh 输出非法 UTF-8，cargo test 撞 "BrokenPipe: listing tests").
+/// the child's later writes die with EPIPE/SIGPIPE (2026-10-12 real incident:
+/// under a UTF-8 locale, bash 3.2 swallows "variable value + first byte of the
+/// multibyte char" when `$VAR` abuts a full-width char, so release.sh emitted
+/// invalid UTF-8 and cargo test hit "BrokenPipe: listing tests").
 /// Bad bytes become U+FFFD and the pipe stays open; only EOF or a real I/O
 /// error ends the stream.
 async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(

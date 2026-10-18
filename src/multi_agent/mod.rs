@@ -438,8 +438,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.agent_path, "root/helper");
-        // D3/发现9：成功消息回显实际能力面（默认省略 tools = read_only；
-        // fixture 无业务工具 → registered 列表为空是预期的诚实回显）。
+        // D3/finding 9: the success message echoes the actual capability face
+        // (omitting tools defaults to read_only; the fixture has no business
+        // tools → an empty registered list is the expected honest echo).
         assert!(
             result
                 .message

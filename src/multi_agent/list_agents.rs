@@ -49,7 +49,7 @@ pub struct ListAgentItem {
     #[serde(skip_serializing_if = "is_zero")]
     pub pending_results: usize,
     /// The tools this child was **actually** registered with (design
-    /// 2026-09-19 发现 9 / T8 wiring). Empty for read-only children — the
+    /// 2026-09-19 finding 9 / T8 wiring). Empty for read-only children — the
     /// omission IS the fact.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub spawned_tools: Vec<String>,

@@ -437,11 +437,13 @@ async fn background_output_is_captured() {
 
 // ── Test 9: invalid UTF-8 mid-stream must not kill capture ─────────
 //
-// 回归（2026-10-12）：捕获端曾用严格 `lines()` 解码，一次解码错误被当成 EOF，
-// 读者任务退出 → 读端关闭 → 子进程后续写入 EPIPE/SIGPIPE（cargo test 列测试
-// 清单报 "BrokenPipe"，exit 101）。实坑源头是 bash 3.2 在 UTF-8 locale 下
-// `$VAR` 紧贴全角字符吞字节，产出非法 UTF-8。修复改为 `read_until` + lossy
-// 解码：坏字节变 U+FFFD，之后的行必须继续被捕获，子进程必须正常退出。
+// Regression (2026-10-12): the capture side once decoded with strict `lines()`,
+// treating a single decode error as EOF. The reader task exited → the read end
+// closed → later child writes hit EPIPE/SIGPIPE (cargo test reported "BrokenPipe"
+// while listing tests, exit 101). The real source was bash 3.2 under a UTF-8
+// locale swallowing bytes when `$VAR` abuts a full-width char, producing invalid
+// UTF-8. The fix switched to `read_until` + lossy decoding: bad bytes become
+// U+FFFD, and later lines must keep being captured while the child exits normally.
 
 #[tokio::test]
 async fn bg_capture_survives_invalid_utf8_midstream() {

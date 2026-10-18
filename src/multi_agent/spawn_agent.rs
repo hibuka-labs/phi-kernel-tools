@@ -73,27 +73,27 @@ for its standard persona. In ask mode every sub-agent write is\n\
 confirmed by the user (the popup names the sub-agent).\n\
 Omit `model` unless the user explicitly asked for a different one.";
 
-/// `tools` 参数的合法值（schema enum 约束；未知值 = 工具调用错误，
-/// LLM 可自行换合法值重试）。
+/// Legal values for the `tools` parameter (schema enum constraint; an unknown
+/// value = tool-call error, and the LLM can retry with a legal one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolsSpec {
-    /// 只读调研（省略 tools 时的默认）。
+    /// Read-only research (the default when `tools` is omitted).
     ReadOnly,
-    /// 改文件 / 跑命令的任务。审批模式下用户逐次确认。
+    /// Tasks that edit files / run commands. In ask mode the user confirms each one.
     Write,
-    /// 代码研究（只读 preset）。
+    /// Code research (read-only preset).
     Researcher,
-    /// 代码编写 preset（含写工具）。
+    /// Code writing preset (includes write tools).
     Coder,
-    /// 代码评审（只读 preset）。
+    /// Code review (read-only preset).
     Reviewer,
-    /// 测试编写与执行 preset（含写工具）。
+    /// Test writing & execution preset (includes write tools).
     Tester,
 }
 
 impl ToolsSpec {
-    /// 映射到框架能力词汇（D2）。
+    /// Maps to the framework capability vocabulary (D2).
     pub fn capability(self) -> ChildToolCapability {
         match self {
             Self::ReadOnly => ChildToolCapability::ReadOnly,
@@ -129,9 +129,10 @@ pub struct SpawnAgentArgs {
     /// a per-request model field.
     #[serde(default)]
     pub model: Option<String>,
-    /// 工具面：省略 = read_only。只读调研任务请省略；需要改文件/跑命令的
-    /// 任务请求 "write"；标准人设直接用 preset 名（researcher/coder/
-    /// reviewer/tester）。审批模式下子 agent 的写操作会逐次弹给用户确认。
+    /// Tool face: omit = read_only. Omit it for read-only research tasks; request
+    /// "write" for tasks that need to edit files / run commands; for standard
+    /// personas use the preset name directly (researcher/coder/reviewer/tester).
+    /// In ask mode every sub-agent write pops up for user confirmation.
     #[serde(default)]
     pub tools: Option<ToolsSpec>,
 }
@@ -196,8 +197,9 @@ impl TypedTool for SpawnAgentTool {
             .fork_turns
             .or_else(|| self.runtime.child_fork_history().map(str::to_owned));
 
-        // D2：schema 缺省 read_only——LLM 面 spawn 永远显式请求能力，
-        // 遗留程序化路径的 None 语义不经过这里。
+        // D2: the schema defaults to read_only — an LLM-facing spawn always
+        // requests a capability explicitly; the None semantics of the legacy
+        // programmatic path never comes through here.
         let requested = args
             .tools
             .map(|t| t.capability())
@@ -229,8 +231,9 @@ impl TypedTool for SpawnAgentTool {
                         // TODO(layer-3): args.model is accepted but inert
                         // until request-level model routing lands (see
                         // SpawnAgentArgs::model).
-                        // D3/发现9：回显实际能力——降级明说（避免"假完成"），
-                        // 默认只读保持输出干净。
+                        // D3/finding 9: echo the actual capability — spell out
+                        // any degradation (avoid "fake success"), and keep the
+                        // default read-only output clean.
                         let mut msg = "Agent spawned successfully".to_string();
                         if echo.recycled {
                             // The same-path predecessor was already terminal
@@ -410,14 +413,14 @@ mod tools_spec_tests {
 
     #[test]
     fn tools_is_optional_and_defaults_to_read_only() {
-        // 无 tools 参数 = read_only（serde default）。解析经 serde：
+        // No `tools` arg = read_only (serde default). Parsing goes through serde:
         let json = r#"{"task_name":"n","task":"t"}"#;
         let args: SpawnAgentArgs = serde_json::from_str(json).unwrap();
         assert!(args.tools.is_none());
         assert_eq!(
             args.tools.map(|t| t.capability()),
             None,
-            "省略 = 无能力层请求；spawn 工具层将其映射为 ReadOnly（D2 默认列）"
+            "omitting = no capability-layer request; the spawn tool layer maps it to ReadOnly (D2 default column)"
         );
     }
 
@@ -440,7 +443,8 @@ mod tools_spec_tests {
 
     #[test]
     fn illegal_tools_value_is_an_error() {
-        // 未知名 = 工具调用错误（LLM 换合法值重试）——serde 拒绝即错误路径。
+        // Unknown name = tool-call error (the LLM retries with a legal value) —
+        // serde rejecting it IS the error path.
         let json = r#"{"task_name":"n","task":"t","tools":"translator"}"#;
         assert!(serde_json::from_str::<SpawnAgentArgs>(json).is_err());
     }
