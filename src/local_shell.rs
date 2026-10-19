@@ -77,6 +77,26 @@ fn format_result(
     }
 }
 
+/// Extra watchdog slack (ms) the pipeline gets over the tool's own fuse, so the
+/// informative `[Command Timed Out]` path wins the race against `[Tool Timeout]`.
+const WATCHDOG_SLACK_MS: u64 = 5_000;
+
+/// Guidance appended to foreground results when the command is a sleep-poll.
+const SLEEP_POLL_HINT: &str = "[hint] Foreground sleep-polling burns a whole turn and blocks the \
+conversation. Start the long job with background=true and let its completion notice wake you; \
+read progress with task_output.";
+
+/// True when a command's first word is `sleep` — the "wait by blocking a turn"
+/// anti-pattern (`sleep 300; tail log`). Hint-only: `sleep` inside real scripts
+/// stays legal, we just nudge the blocking-wait shape.
+fn is_sleep_poll(command: &str) -> bool {
+    // `split_whitespace` already skips leading whitespace.
+    command
+        .split_whitespace()
+        .next()
+        .is_some_and(|word| word == "sleep")
+}
+
 /// Truncate a shell output string to the per-call output budget
 /// (`ToolContext::max_output_chars`), keeping both the head and the tail.
 ///
@@ -84,7 +104,7 @@ fn format_result(
 /// output is meaningful at the *start*, so both ends survive and the elided
 /// middle is marked. This mirrors `read_file`/`list_files`: the tool
 /// self-truncates so the engine's hard reject never fires for a noisy command.
-fn truncate_output(s: &str, max_chars: Option<usize>) -> String {
+pub(crate) fn truncate_output(s: &str, max_chars: Option<usize>) -> String {
     let Some(max_chars) = max_chars else {
         return s.to_string();
     };
@@ -123,7 +143,8 @@ impl Tool for LocalShellTool {
          - Foreground (default): blocks until the command exits, or is killed at timeout_ms (default 120000).\n\
          - Background (background=true): returns a task_id immediately and keeps running with no timeout by default; its exit sends a system notification. For a server, an exit notification means it died — investigate via task_output(task_id). Read output anytime with task_output; stop with task_cancel.\n\
          - timeout_ms: kill the process after N ms; 0 = never kill. Background defaults to 0 (indefinite), foreground to 120000. Set it only on background jobs that must finish within a bound (e.g. a long test run).\n\
-         Decide like a person: servers/watchers (vite, mvn spring-boot:run) → background; verify they listen (e.g. lsof -ti:PORT) before reporting success, then leave them alone. Long one-shot jobs (mvn test, npm install) → background with a generous timeout_ms, or foreground when quick. For large expected output, limit lines (grep ... | head -n 30)."
+         Decide like a person: servers/watchers (vite, mvn spring-boot:run) → background; verify they listen (e.g. lsof -ti:PORT) before reporting success, then leave them alone. Long one-shot jobs (mvn test, npm install) → background with a generous timeout_ms, or foreground when quick. For large expected output, limit lines (grep ... | head -n 30).\n\
+         NEVER wait by sleeping in a foreground call (`sleep 120; tail log` burns a whole turn and blocks the conversation): start the job with background=true and let its completion notice wake you, then read progress with task_output."
     }
 
     fn schema(&self) -> Value {
@@ -161,6 +182,30 @@ impl Tool for LocalShellTool {
             version: env!("CARGO_PKG_VERSION").to_string(),
             requirements: vec![],
         }
+    }
+
+    fn call_timeout_ms(&self, args: &Value) -> Option<u64> {
+        // Mirror the per-call budget parse in `call` so the pipeline watchdog
+        // covers the fuse this tool arms — and never kills a call early that
+        // was explicitly promised more time (session 20261018_7844215b: a 660s
+        // budget was cut at the 600s framework default). `0` means unbounded.
+        //
+        // A small slack keeps the tool's own fuse the one that fires, so the
+        // model sees `[Command Timed Out after Nms]` instead of the blunter
+        // `[Tool Timeout]` when a command actually overruns.
+        let is_background = args
+            .get("background")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let budget = args
+            .get("timeout_ms")
+            .and_then(Value::as_u64)
+            .unwrap_or(if is_background { 0 } else { self.timeout_ms });
+        Some(if budget == 0 {
+            0
+        } else {
+            budget.saturating_add(WATCHDOG_SLACK_MS)
+        })
     }
 
     async fn call(&self, args: &Value, ctx: &ToolContext) -> AgentResult<Vec<Content>> {
@@ -347,10 +392,15 @@ impl Tool for LocalShellTool {
                 _ = &mut sleep, if !unlimited => {
                     kill_process_group(pid);
                     tracing::warn!(command = %command, timeout_ms = timeout_ms, "execute_command: timed out, killed process group");
-                    return Ok(vec![Content::text(format!(
+                    let mut msg = format!(
                         "[Command Timed Out after {}ms]\ncommand: {}",
                         timeout_ms, command
-                    ))]);
+                    );
+                    if is_sleep_poll(&command) {
+                        msg.push('\n');
+                        msg.push_str(SLEEP_POLL_HINT);
+                    }
+                    return Ok(vec![Content::text(msg)]);
                 }
                 _ = ctx.cancel_token.cancelled() => {
                     kill_process_group(pid);
@@ -386,7 +436,11 @@ impl Tool for LocalShellTool {
             "execute_command: done"
         );
 
-        let summary = format_result(&command, &stdout_buf, &stderr_buf, exit_code, false);
+        let mut summary = format_result(&command, &stdout_buf, &stderr_buf, exit_code, false);
+        if is_sleep_poll(&command) {
+            summary.push('\n');
+            summary.push_str(SLEEP_POLL_HINT);
+        }
         let summary = truncate_output(&summary, ctx.max_output_chars);
         Ok(vec![Content::text(summary)])
     }
@@ -807,6 +861,53 @@ mod tests {
             .await
             .unwrap();
         assert!(content_text(&result).contains("Timed Out"));
+    }
+
+    /// The pipeline watchdog budget must cover the per-call `timeout_ms` —
+    /// session 20261018_7844215b: a 660s promise was killed at the 600s
+    /// framework default because the watchdog never saw the argument. Slack
+    /// keeps the tool's own fuse the first to fire.
+    #[test]
+    fn call_timeout_ms_mirrors_per_call_budget() {
+        let tool = LocalShellTool::new(120_000);
+        assert_eq!(
+            tool.call_timeout_ms(&json!({"command": "x", "timeout_ms": 660_000})),
+            Some(660_000 + WATCHDOG_SLACK_MS)
+        );
+        assert_eq!(
+            tool.call_timeout_ms(&json!({"command": "x", "timeout_ms": 0})),
+            Some(0)
+        );
+        assert_eq!(
+            tool.call_timeout_ms(&json!({"command": "x", "background": true})),
+            Some(0)
+        );
+        assert_eq!(
+            tool.call_timeout_ms(&json!({"command": "x"})),
+            Some(120_000 + WATCHDOG_SLACK_MS)
+        );
+    }
+
+    /// `sleep` as the *first* word is the turn-blocking wait anti-pattern and
+    /// earns a hint; `sleep` inside a real script stays untouched.
+    #[test]
+    fn sleep_poll_detection_is_hint_only() {
+        assert!(is_sleep_poll("sleep 300; tail -4 log"));
+        assert!(is_sleep_poll("  sleep 5"));
+        assert!(!is_sleep_poll("./release.sh && sleep 1"));
+        assert!(!is_sleep_poll("cargo test"));
+    }
+
+    #[tokio::test]
+    async fn sleep_poll_timeout_result_carries_hint() {
+        let tool = LocalShellTool::new(50);
+        let result = tool
+            .call(&json!({"command": "sleep 30"}), &ToolContext::for_test())
+            .await
+            .unwrap();
+        let text = content_text(&result);
+        assert!(text.contains("Timed Out"), "timeout not reported:\n{text}");
+        assert!(text.contains("[hint]"), "hint missing:\n{text}");
     }
 
     /// `timeout_ms: 0` means "never kill": a command outliving the tool default

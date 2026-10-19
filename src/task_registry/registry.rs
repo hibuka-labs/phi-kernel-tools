@@ -140,17 +140,29 @@ impl<E: TaskEntry> TaskRegistry<E> {
     /// Updates the status of a task.
     ///
     /// **Terminal-state protection**: if the task is already in a terminal
-    /// state, the new status is silently ignored.
+    /// state, the new status is ignored. A repeated write of the same status
+    /// (double-cancel, duplicate completion) is a quiet no-op; only a
+    /// conflicting terminal → terminal transition logs a warning.
     pub fn update_status(&self, id: &str, status: E::Status) {
         let mut map = self.slots.write().unwrap();
         if let Some(slot) = map.get_mut(id) {
             if slot.entry.status().is_terminal() {
-                tracing::warn!(
-                    task_id = id,
-                    current = ?slot.entry.status(),
-                    requested = ?status,
-                    "update_status: ignoring — already in terminal state"
-                );
+                if format!("{:?}", slot.entry.status()) == format!("{:?}", status) {
+                    // Idempotent re-write (e.g. cancel on an already-cancelled
+                    // task) — nothing changed, nothing to report.
+                    tracing::debug!(
+                        task_id = id,
+                        status = ?status,
+                        "update_status: no-op — status already set"
+                    );
+                } else {
+                    tracing::warn!(
+                        task_id = id,
+                        current = ?slot.entry.status(),
+                        requested = ?status,
+                        "update_status: ignoring — already in terminal state"
+                    );
+                }
                 return;
             }
 

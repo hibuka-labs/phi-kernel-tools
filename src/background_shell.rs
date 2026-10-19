@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use crate::local_shell::kill_process_group;
+use crate::local_shell::{kill_process_group, truncate_output};
 use crate::task_registry::{TaskEntry, TaskRegistry as GenericRegistry, TaskStatus};
 
 // ── Shell-specific types ──────────────────────────────────────────────
@@ -457,44 +457,60 @@ impl TaskOutputTool {
     }
 }
 
-fn format_status(snap: &BackgroundTaskSnapshot) -> Value {
+fn format_status(snap: &BackgroundTaskSnapshot, max_chars: Option<usize>) -> Value {
     let elapsed_ms = snap.started_at.elapsed().as_millis();
+    // Two payload fields must fit the engine's output budget together with the
+    // JSON envelope — self-truncate like `execute_command`, or the pipeline
+    // hard-rejects the whole result (session 20261018_7844215b: `task_output`
+    // died as `ToolOutputTooLarge` on a fat fan-in notice).
+    let field_budget = max_chars.map(|m| (m / 2).saturating_sub(256));
+    let trim = |s: &str| -> String { truncate_output(s, field_budget) };
+    let stdout = trim(&snap.stdout);
+    let stderr = trim(&snap.stderr);
     match &snap.status {
         BackgroundTaskStatus::Running => json!({
             "status": "running",
             "elapsed_ms": elapsed_ms,
-            "partial_stdout": snap.stdout,
-            "partial_stderr": snap.stderr,
+            "partial_stdout": stdout,
+            "partial_stderr": stderr,
         }),
         BackgroundTaskStatus::Done => json!({
             "status": "done",
             "exit_code": snap.exit_code,
             "elapsed_ms": elapsed_ms,
-            "stdout": snap.stdout,
-            "stderr": snap.stderr,
+            "stdout": stdout,
+            "stderr": stderr,
         }),
         BackgroundTaskStatus::TimedOut => json!({
             "status": "timed_out",
             "exit_code": snap.exit_code,
             "elapsed_ms": elapsed_ms,
-            "stdout": snap.stdout,
-            "stderr": snap.stderr,
+            "stdout": stdout,
+            "stderr": stderr,
         }),
         BackgroundTaskStatus::Cancelled => json!({
             "status": "cancelled",
             "exit_code": snap.exit_code,
             "elapsed_ms": elapsed_ms,
-            "stdout": snap.stdout,
-            "stderr": snap.stderr,
+            "stdout": stdout,
+            "stderr": stderr,
         }),
         BackgroundTaskStatus::Error(msg) => json!({
             "status": "error",
             "error": msg,
             "elapsed_ms": elapsed_ms,
-            "stdout": snap.stdout,
-            "stderr": snap.stderr,
+            "stdout": stdout,
+            "stderr": stderr,
         }),
     }
+}
+
+fn render_status(snap: &BackgroundTaskSnapshot, max_chars: Option<usize>) -> String {
+    let text = serde_json::to_string_pretty(&format_status(snap, max_chars))
+        .unwrap_or_else(|_| "{}".to_string());
+    // Last resort: JSON escaping can inflate the envelope past the budget —
+    // trim the serialized form rather than let the pipeline hard-reject it.
+    truncate_output(&text, max_chars)
 }
 
 #[async_trait]
@@ -551,7 +567,7 @@ impl Tool for TaskOutputTool {
         Some(310_000)
     }
 
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
+    async fn call(&self, args: &Value, ctx: &ToolContext) -> AgentResult<Vec<Content>> {
         let task_id = args
             .get("task_id")
             .and_then(Value::as_str)
@@ -581,10 +597,10 @@ impl Tool for TaskOutputTool {
                     if snap.status.is_terminal() {
                         self.registry.mark_consumed(&task_id);
                     }
-                    Ok(vec![Content::text(
-                        serde_json::to_string_pretty(&format_status(&snap))
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    )])
+                    Ok(vec![Content::text(render_status(
+                        &snap,
+                        ctx.max_output_chars,
+                    ))])
                 }
                 None => Ok(vec![Content::text(format!(
                     "{}",
@@ -600,10 +616,10 @@ impl Tool for TaskOutputTool {
                     if snap.status.is_terminal() {
                         self.registry.mark_consumed(&task_id);
                     }
-                    Ok(vec![Content::text(
-                        serde_json::to_string_pretty(&format_status(&snap))
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    )])
+                    Ok(vec![Content::text(render_status(
+                        &snap,
+                        ctx.max_output_chars,
+                    ))])
                 }
                 None => Ok(vec![Content::text(format!(
                     "{}",
@@ -737,6 +753,46 @@ mod tests {
         assert!(msg.contains("not found"), "fact first: {msg}");
         assert!(msg.contains("sub-agent"), "names the confusion: {msg}");
         assert!(msg.contains("end your turn"), "names the action: {msg}");
+    }
+
+    // ── render_status self-truncation ──
+
+    fn done_snapshot(stdout: &str, stderr: &str) -> BackgroundTaskSnapshot {
+        BackgroundTaskSnapshot {
+            id: "bg_deadbeef".into(),
+            command: "big".into(),
+            working_dir: None,
+            timeout_ms: 0,
+            status: BackgroundTaskStatus::Done,
+            started_at: Instant::now(),
+            finished_at: Some(Instant::now()),
+            stdout: stdout.to_string(),
+            stderr: stderr.to_string(),
+            exit_code: Some(0),
+            consumed: false,
+        }
+    }
+
+    /// A fat task result must self-truncate to the engine's output budget
+    /// (head+tail + marker) instead of dying as `ToolOutputTooLarge` (session
+    /// 20261018_7844215b).
+    #[test]
+    fn render_status_self_truncates_to_budget() {
+        let snap = done_snapshot(&format!("HEAD{}", "x".repeat(40_000)), &"e".repeat(40_000));
+        let text = render_status(&snap, Some(2_000));
+        assert!(
+            text.chars().count() <= 2_000,
+            "over budget: {}",
+            text.chars().count()
+        );
+        assert!(text.contains("output truncated"), "marker missing:\n{text}");
+    }
+
+    #[test]
+    fn render_status_unbounded_keeps_full_output() {
+        let text = render_status(&done_snapshot("hello", "err"), None);
+        assert!(text.contains("hello"), "stdout dropped:\n{text}");
+        assert!(text.contains("err"), "stderr dropped:\n{text}");
     }
 
     #[test]
