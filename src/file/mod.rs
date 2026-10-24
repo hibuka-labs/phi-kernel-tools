@@ -50,7 +50,12 @@ pub(crate) fn resolve_path(
         return Err("Empty path provided.".to_string());
     }
 
-    let p = Path::new(trimmed);
+    // `~/…` means the home directory. Docs and skill files spell paths that
+    // way, and a model reading one should not have to learn the user's home
+    // absolute before it can open the file (observed: two wasted tool calls
+    // re-finding `~/.phimint/skills/…` by hand). `~user` is not expanded —
+    // only the `~` the writer meant as "my home".
+    let p = expand_home(trimmed)?;
 
     if confined {
         if p.is_absolute() {
@@ -62,7 +67,7 @@ pub(crate) fn resolve_path(
         }
         // Lexical check first: reject `..` that would climb above the root,
         // even for paths that don't exist yet.
-        normalize_within(workspace_root, p).map_err(|_| {
+        normalize_within(workspace_root, &p).map_err(|_| {
             format!(
                 "Path '{}' escapes the workspace root {} — rejected.",
                 trimmed,
@@ -72,7 +77,7 @@ pub(crate) fn resolve_path(
     }
 
     let resolved = if p.is_absolute() {
-        p.to_path_buf()
+        p
     } else {
         workspace_root.join(p)
     };
@@ -103,6 +108,33 @@ pub(crate) fn resolve_path(
     } else {
         Ok(resolved)
     }
+}
+
+/// Expand a leading `~` / `~/…` to the home directory; every other path comes
+/// back as-is. `~user` is deliberately not touched — only the `~` that means
+/// "my home" is unambiguous.
+fn expand_home(path: &str) -> Result<PathBuf, String> {
+    if path == "~" {
+        return home_dir();
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return Ok(home_dir()?.join(rest));
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn home_dir() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    const HOME_KEY: &str = "USERPROFILE";
+    #[cfg(not(windows))]
+    const HOME_KEY: &str = "HOME";
+
+    std::env::var_os(HOME_KEY)
+        .map(PathBuf::from)
+        .filter(|home| !home.as_os_str().is_empty())
+        .ok_or_else(|| {
+            format!("Cannot expand '~': {HOME_KEY} is not set. Pass the absolute path instead.")
+        })
 }
 
 /// Lexically normalize `user_path` against `workspace_root`, failing when `..`
@@ -152,6 +184,30 @@ mod tests {
         // `..` escapes are allowed in open mode (approval layer is the guard).
         let escaped = resolve_path(root, "../outside.md", false).unwrap();
         assert!(escaped.ends_with("outside.md"));
+    }
+
+    #[test]
+    fn resolve_path_expands_a_leading_home() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // `~/…` and bare `~` resolve to the home directory — skill files and
+        // docs spell paths that way and the model must be able to open them
+        // as written. An existing path (the home itself) comes back
+        // canonicalized; a fresh one is the plain join.
+        let home = home_dir().unwrap();
+        assert_eq!(
+            resolve_path(root, "~/notes/todo.md", false).unwrap(),
+            home.join("notes/todo.md")
+        );
+        assert_eq!(
+            resolve_path(root, "~", false).unwrap(),
+            home.canonicalize().unwrap_or_else(|_| home.clone())
+        );
+
+        // `~user` is not "my home" — leave it for the join (relative).
+        let other = resolve_path(root, "~root/x.md", false).unwrap();
+        assert!(other.ends_with("~root/x.md"), "{other:?}");
     }
 
     #[test]
