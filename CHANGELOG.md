@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-24
+
+### Added
+- **`~` expands to the home directory in the file tools** — `~/…` and bare
+  `~` resolve to the home directory (docs and skill files spell paths that
+  way; the model was wasting tool calls re-finding `~/.phimint/skills/…`
+  by hand). `~user` is deliberately not touched — only the `~` the writer
+  meant as "my home" is unambiguous.
+
+### Changed
+- Bump `agent-base` to 0.11.0 and `agent-works` to 0.11.1 (per-call timeout
+  budget, awaiting-human park).
+
 ## [0.10.0] - 2026-10-18
 
 ### Added
