@@ -95,6 +95,9 @@ impl MessageRecord {
                 tool_call_id: format!("archived-{}-{}", self.window, self.index),
                 name: self.name,
                 content: self.content,
+                // The archive line carries words only; pictures a tool result
+                // once held are gone by the time it is rotated out.
+                images: Vec::new(),
             },
             role => ChatMessage::Custom {
                 role: role.to_string(),
@@ -974,6 +977,7 @@ mod tests {
                 tool_call_id: "tc_1".into(),
                 name: Some("shell".into()),
                 content: "a.txt\nb.txt".into(),
+                images: Vec::new(),
             },
         ];
         store.archive_window(1, &msgs).unwrap();
@@ -1003,6 +1007,7 @@ mod tests {
                 tool_call_id,
                 name,
                 content,
+                images: _,
             } => {
                 assert_eq!(tool_call_id, "tc_1");
                 assert_eq!(name.as_deref(), Some("shell"));
@@ -1054,6 +1059,7 @@ mod tests {
                 tool_call_id,
                 name,
                 content,
+                images: _,
             } => {
                 assert_eq!(tool_call_id, "archived-1-2");
                 assert_eq!(name.as_deref(), Some("shell"));

@@ -1,10 +1,10 @@
 //! History tools for context rotation.
 //!
 //! Provides read-only access to previous context windows via 4 tools:
-//! - `history.list_windows` — list all archived windows
-//! - `history.list_items` — list messages in a window with filtering
-//! - `history.read_item` — read a specific message's content
-//! - `history.search_contents` — full-text search across windows
+//! - `history_list_windows` — list all archived windows
+//! - `history_list_items` — list messages in a window with filtering
+//! - `history_read_item` — read a specific message's content
+//! - `history_search_contents` — full-text search across windows
 //!
 //! These are "private" tools — the model uses them silently for context
 //! continuity. The system prompt instructs the model never to disclose
@@ -42,7 +42,7 @@ fn truncate_to_tokens(text: &str, max_tokens: usize) -> String {
     )
 }
 
-// ── history.list_windows ─────────────────────────────────────────────────────
+// ── history_list_windows ─────────────────────────────────────────────────────
 
 /// List all archived context windows.
 pub struct HistoryListWindowsTool {
@@ -58,7 +58,7 @@ impl HistoryListWindowsTool {
 #[async_trait]
 impl Tool for HistoryListWindowsTool {
     fn name(&self) -> &'static str {
-        "history.list_windows"
+        "history_list_windows"
     }
 
     fn description(&self) -> &'static str {
@@ -127,7 +127,7 @@ impl Tool for HistoryListWindowsTool {
     }
 }
 
-// ── history.list_items ───────────────────────────────────────────────────────
+// ── history_list_items ───────────────────────────────────────────────────────
 
 /// List messages in a window with optional filtering.
 pub struct HistoryListItemsTool {
@@ -143,7 +143,7 @@ impl HistoryListItemsTool {
 #[async_trait]
 impl Tool for HistoryListItemsTool {
     fn name(&self) -> &'static str {
-        "history.list_items"
+        "history_list_items"
     }
 
     fn description(&self) -> &'static str {
@@ -231,7 +231,7 @@ impl Tool for HistoryListItemsTool {
     }
 }
 
-// ── history.read_item ────────────────────────────────────────────────────────
+// ── history_read_item ────────────────────────────────────────────────────────
 
 /// Default character limit for read_item to avoid hitting pipeline output limits.
 const DEFAULT_READ_LIMIT: usize = 3000;
@@ -250,7 +250,7 @@ impl HistoryReadItemTool {
 #[async_trait]
 impl Tool for HistoryReadItemTool {
     fn name(&self) -> &'static str {
-        "history.read_item"
+        "history_read_item"
     }
 
     fn description(&self) -> &'static str {
@@ -353,7 +353,7 @@ impl Tool for HistoryReadItemTool {
     }
 }
 
-// ── history.search_contents ──────────────────────────────────────────────────
+// ── history_search_contents ──────────────────────────────────────────────────
 
 /// Search content across archived windows.
 pub struct HistorySearchContentsTool {
@@ -369,7 +369,7 @@ impl HistorySearchContentsTool {
 #[async_trait]
 impl Tool for HistorySearchContentsTool {
     fn name(&self) -> &'static str {
-        "history.search_contents"
+        "history_search_contents"
     }
 
     fn description(&self) -> &'static str {
@@ -667,6 +667,28 @@ mod tests {
         let store = Arc::new(HistoryStore::new(tmp.path(), "test"));
         let tools = create_history_tools(store);
         assert_eq!(tools.len(), 4);
+    }
+
+    /// LLM tool-name wire contract: every provider rejects a `tools[].name`
+    /// outside `^[a-zA-Z0-9_-]+$` at request time — DeepSeek answered the
+    /// whole turn with HTTP 400 "Invalid 'tools[N].name': string does not
+    /// match pattern" while the tools still carried dotted `history.*` names
+    /// (session 20261031_de93b4e8). The name is wire surface; keep it in pattern.
+    #[test]
+    fn tool_names_match_llm_wire_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(HistoryStore::new(tmp.path(), "test"));
+        for tool in create_history_tools(store) {
+            let name = tool.name();
+            assert!(
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "tool name {name:?} violates the LLM wire pattern ^[a-zA-Z0-9_-]{{1,64}}$"
+            );
+        }
     }
 
     /// Smoke test: every tool's name/description/schema/metadata builds a legal value.

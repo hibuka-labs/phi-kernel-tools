@@ -9,13 +9,13 @@
 //! - **Covered actions**: every work tool call, mapped through a
 //!   phimint-specific argument table (`read_file` → path+lines,
 //!   `execute_command` → command head, ...). Context-management churn
-//!   (`history.*`, `notes.read_*`) is excluded — it is not work.
+//!   (`history_*`, `notes_read_*`) is excluded — it is not work.
 //! - **Last narration**: the model's final non-empty assistant text, so the
 //!   fresh window knows where the train stopped.
 //!
 //! The compactor injects the ledger into the fresh window via the existing
 //! thread-hint slot and mirrors it to `notes/activity_ledger.md`, so even
-//! at the smallest viable budget `notes.list_files` is never empty.
+//! at the smallest viable budget `notes_list_files` is never empty.
 
 use agent_base::ChatMessage;
 
@@ -28,6 +28,12 @@ const MAX_NARRATION_CHARS: usize = 200;
 /// Whole-ledger char cap (injected into every fresh window — must stay
 /// small against a minimum viable budget of ~4k work-room tokens).
 const MAX_LEDGER_CHARS: usize = 1200;
+
+/// Keep at most this many artifact references (the most recent ones).
+const MAX_INDEX_ENTRIES: usize = 10;
+/// Whole-index char cap (same order as the ledger: tiny against a fresh
+/// window's work room).
+const MAX_INDEX_CHARS: usize = 2_000;
 
 /// Extract the activity ledger from an outgoing window's messages.
 ///
@@ -95,6 +101,84 @@ pub fn extract_ledger(messages: &[ChatMessage]) -> Option<String> {
     Some(out)
 }
 
+/// Extract the artifact index (M3c, action-executor-design §6.1) from an
+/// outgoing window's messages: the summary+reference lines that survive the
+/// rotation while the bodies go with the archive. Bodies stay fetchable via
+/// `obs.fetch('<id>')` — the index is their persistent part.
+///
+/// The recognised line is the engine's `artifact_line` shape (codexec
+/// `artifacts.rs`, pinned example in both test suites — keep them in step):
+///
+/// ```text
+/// artifact art_0001 (stdout, 240112 bytes): <summary> — obs.fetch('art_0001') for the full body
+/// ```
+///
+/// Every message variant that carries prose is scanned — observation panes
+/// arrive as shape-A user messages and tool results alike. Returns `None`
+/// when the window spilled nothing.
+pub fn extract_artifact_index(messages: &[ChatMessage]) -> Option<String> {
+    let mut entries: Vec<(String, String)> = Vec::new(); // (id, line), recency order
+    for msg in messages {
+        for text in message_texts(msg) {
+            for line in text.lines() {
+                let Some((id, line)) = artifact_ref_line(line) else {
+                    continue;
+                };
+                // Re-mention moves the entry to the end (most recent wins,
+                // and one id occupies one line — never a stack of echoes).
+                entries.retain(|(seen, _)| *seen != id);
+                entries.push((id, line));
+            }
+        }
+    }
+    if entries.is_empty() {
+        return None;
+    }
+
+    let skipped = entries.len().saturating_sub(MAX_INDEX_ENTRIES);
+    let mut out = String::from("<artifact_index>\n");
+    out.push_str("Spilled artifacts still fetchable from the previous window (fetch with obs.fetch('<id>') for the full body; print only the part you need):\n");
+    if skipped > 0 {
+        out.push_str(&format!("- (+{skipped} earlier artifacts omitted)\n"));
+    }
+    for (_, line) in &entries[skipped..] {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str("</artifact_index>");
+
+    // Pathological growth guard (same shape as the ledger's).
+    if out.chars().count() > MAX_INDEX_CHARS {
+        let head: String = out.chars().take(MAX_INDEX_CHARS - 3).collect();
+        return Some(format!("{head}..."));
+    }
+    Some(out)
+}
+
+/// One `artifact_line`-shaped line → `(id, trimmed line)`. The `obs.fetch('`
+/// tail is part of the signature: a prose mention of "artifact art_…" without
+/// the fetch instruction is not a reference line.
+fn artifact_ref_line(line: &str) -> Option<(String, String)> {
+    let line = line.trim();
+    let id = line.strip_prefix("artifact ")?.split_whitespace().next()?;
+    if !id.starts_with("art_") || !line.contains("— obs.fetch('art_") {
+        return None;
+    }
+    Some((id.to_string(), line.to_string()))
+}
+
+/// The prose carrier of every message variant (`Custom` carries structured
+/// data, not prose — skipped).
+fn message_texts(msg: &ChatMessage) -> Vec<&str> {
+    match msg {
+        ChatMessage::System { content, .. } => vec![content],
+        ChatMessage::User { content, .. } => vec![content],
+        ChatMessage::Assistant { content, .. } => content.iter().map(String::as_str).collect(),
+        ChatMessage::Tool { content, .. } => vec![content],
+        ChatMessage::Custom { .. } => Vec::new(),
+    }
+}
+
 /// Map one tool call to a ledger line. `None` = not worth recording
 /// (context-management churn) or nothing extractable.
 fn ledger_entry(tool: &str, args_json: &str) -> Option<String> {
@@ -138,18 +222,18 @@ fn ledger_entry(tool: &str, args_json: &str) -> Option<String> {
                 .or_else(|| str_field(&args, "name"))
                 .map(|n| format!("spawned sub-agent {n}"))?
         }
-        "notes.write_file" | "notes.append_to_file" => {
+        "notes_write_file" | "notes_append_to_file" => {
             let args = parse(args_json)?;
             str_field(&args, "path").map(|p| format!("note {p}"))?
         }
         // Private context-management churn — not work.
-        "history.list_windows"
-        | "history.list_items"
-        | "history.read_item"
-        | "history.search_contents"
-        | "notes.list_files"
-        | "notes.read_file"
-        | "notes.search_contents" => {
+        "history_list_windows"
+        | "history_list_items"
+        | "history_read_item"
+        | "history_search_contents"
+        | "notes_list_files"
+        | "notes_read_file"
+        | "notes_search_contents" => {
             return None;
         }
         // Unknown work tool: record the name plus its first string argument
@@ -265,10 +349,10 @@ mod tests {
         let msgs = vec![assistant(
             "",
             vec![
-                call("history.list_windows", serde_json::json!({})),
-                call("notes.list_files", serde_json::json!({})),
+                call("history_list_windows", serde_json::json!({})),
+                call("notes_list_files", serde_json::json!({})),
                 call(
-                    "notes.read_file",
+                    "notes_read_file",
                     serde_json::json!({"path": "thread_hint.md"}),
                 ),
             ],
@@ -281,7 +365,7 @@ mod tests {
         let msgs = vec![assistant(
             "",
             vec![call(
-                "notes.write_file",
+                "notes_write_file",
                 serde_json::json!({"path": "thread_hint.md", "content": "..."}),
             )],
         )];
@@ -371,5 +455,77 @@ mod tests {
             assistant("", vec![]),
         ];
         assert!(extract_ledger(&msgs).is_none());
+    }
+
+    // ---- the artifact index (M3c) ----
+
+    /// The pinned model-face line — the same example codexec's `artifact_line`
+    /// test pins. If that shape changes, change this matcher in the same
+    /// breath.
+    #[test]
+    fn artifact_index_carries_the_pinned_reference_line() {
+        let line = "artifact art_0001 (stdout, 11 bytes): first body — obs.fetch('art_0001') for the full body";
+        let msgs = vec![ChatMessage::user(format!("[observation]\n{line}"))];
+        let index = extract_artifact_index(&msgs).unwrap();
+        assert!(index.contains("<artifact_index>"));
+        assert!(index.contains(line), "{index}");
+        assert!(index.contains("obs.fetch('<id>')"), "{index}");
+    }
+
+    #[test]
+    fn artifact_index_scans_tool_results_and_dedups_by_id() {
+        let line = "artifact art_0002 (observation, 40 bytes): body — obs.fetch('art_0002') for the full body";
+        let msgs = vec![
+            ChatMessage::user(format!("shape-A pane\n{line}")),
+            ChatMessage::Tool {
+                tool_call_id: "t1".into(),
+                name: Some("code_cell".into()),
+                content: format!("tool result\n{line}"),
+                images: Vec::new(),
+            },
+        ];
+        let index = extract_artifact_index(&msgs).unwrap();
+        assert_eq!(
+            index.matches("artifact art_0002").count(),
+            1,
+            "one id, one line — never a stack of echoes: {index}"
+        );
+    }
+
+    #[test]
+    fn artifact_index_keeps_the_most_recent_entries() {
+        let mut msgs = Vec::new();
+        for i in 1..=12 {
+            let line = format!(
+                "artifact art_{i:04} (stdout, 1 bytes): s — obs.fetch('art_{i:04}') for the full body"
+            );
+            msgs.push(ChatMessage::user(line));
+        }
+        let index = extract_artifact_index(&msgs).unwrap();
+        assert!(index.contains("earlier artifacts omitted"), "{index}");
+        assert!(!index.contains("artifact art_0001 ("), "{index}");
+        assert!(index.contains("artifact art_0012 ("), "{index}");
+    }
+
+    #[test]
+    fn a_prose_mention_without_the_fetch_instruction_is_not_a_reference() {
+        let msgs = vec![
+            ChatMessage::user("we minted artifact art_0001 yesterday"),
+            assistant("artifact art_0002 is what we call them", vec![]),
+        ];
+        assert!(extract_artifact_index(&msgs).is_none());
+    }
+
+    /// The summarized real shape (acceptance 20261029_a8015baa): a big body's
+    /// line carries the marker in the middle and is ONE line — that is what
+    /// the extractor matches. (When codexec's `summary_of` leaked newlines
+    /// into this line, real artifacts silently dropped out of the index; the
+    /// one-line invariant is pinned there too.)
+    #[test]
+    fn a_summarized_real_shape_line_is_an_index_entry() {
+        let line = "artifact art_0002 (stdout, 200001 bytes): BBBB BBBB ...[output truncated] BBBB BBBB — obs.fetch('art_0002') for the full body";
+        let msgs = vec![ChatMessage::user(line.to_string())];
+        let index = extract_artifact_index(&msgs).unwrap();
+        assert!(index.contains(line), "{index}");
     }
 }

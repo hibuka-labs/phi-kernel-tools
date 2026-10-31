@@ -1,11 +1,11 @@
 //! Notes tools for context rotation.
 //!
 //! Provides read-write access to a persistent scratchpad via 5 tools:
-//! - `notes.list_files` — list note files
-//! - `notes.read_file` — read a note file
-//! - `notes.search_contents` — search across notes
-//! - `notes.append_to_file` — append to a note
-//! - `notes.write_file` — create/overwrite a note
+//! - `notes_list_files` — list note files
+//! - `notes_read_file` — read a note file
+//! - `notes_search_contents` — search across notes
+//! - `notes_append_to_file` — append to a note
+//! - `notes_write_file` — create/overwrite a note
 //!
 //! These are "private" tools — the model uses them silently for state
 //! persistence across context windows.
@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use super::notes::NotesStore;
 
-// ── notes.list_files ────────────────────────────────────────────────────────
+// ── notes_list_files ────────────────────────────────────────────────────────
 
 /// List note files under an optional prefix.
 pub struct NotesListFilesTool {
@@ -34,7 +34,7 @@ impl NotesListFilesTool {
 #[async_trait]
 impl Tool for NotesListFilesTool {
     fn name(&self) -> &'static str {
-        "notes.list_files"
+        "notes_list_files"
     }
 
     fn description(&self) -> &'static str {
@@ -88,7 +88,7 @@ impl Tool for NotesListFilesTool {
     }
 }
 
-// ── notes.read_file ─────────────────────────────────────────────────────────
+// ── notes_read_file ─────────────────────────────────────────────────────────
 
 /// Read a note file with optional line range.
 pub struct NotesReadFileTool {
@@ -104,7 +104,7 @@ impl NotesReadFileTool {
 #[async_trait]
 impl Tool for NotesReadFileTool {
     fn name(&self) -> &'static str {
-        "notes.read_file"
+        "notes_read_file"
     }
 
     fn description(&self) -> &'static str {
@@ -163,7 +163,7 @@ impl Tool for NotesReadFileTool {
     }
 }
 
-// ── notes.search_contents ───────────────────────────────────────────────────
+// ── notes_search_contents ───────────────────────────────────────────────────
 
 /// Search across note files.
 pub struct NotesSearchContentsTool {
@@ -179,7 +179,7 @@ impl NotesSearchContentsTool {
 #[async_trait]
 impl Tool for NotesSearchContentsTool {
     fn name(&self) -> &'static str {
-        "notes.search_contents"
+        "notes_search_contents"
     }
 
     fn description(&self) -> &'static str {
@@ -263,7 +263,7 @@ impl Tool for NotesSearchContentsTool {
     }
 }
 
-// ── notes.append_to_file ────────────────────────────────────────────────────
+// ── notes_append_to_file ────────────────────────────────────────────────────
 
 /// Append content to a note file.
 pub struct NotesAppendToFileTool {
@@ -279,7 +279,7 @@ impl NotesAppendToFileTool {
 #[async_trait]
 impl Tool for NotesAppendToFileTool {
     fn name(&self) -> &'static str {
-        "notes.append_to_file"
+        "notes_append_to_file"
     }
 
     fn description(&self) -> &'static str {
@@ -330,7 +330,7 @@ impl Tool for NotesAppendToFileTool {
     }
 }
 
-// ── notes.write_file ────────────────────────────────────────────────────────
+// ── notes_write_file ────────────────────────────────────────────────────────
 
 /// Create or overwrite a note file.
 pub struct NotesWriteFileTool {
@@ -346,7 +346,7 @@ impl NotesWriteFileTool {
 #[async_trait]
 impl Tool for NotesWriteFileTool {
     fn name(&self) -> &'static str {
-        "notes.write_file"
+        "notes_write_file"
     }
 
     fn description(&self) -> &'static str {
@@ -609,6 +609,28 @@ mod tests {
         let store = Arc::new(NotesStore::new(tmp.path(), "test", "main"));
         let tools = create_notes_tools(store);
         assert_eq!(tools.len(), 5);
+    }
+
+    /// LLM tool-name wire contract: every provider rejects a `tools[].name`
+    /// outside `^[a-zA-Z0-9_-]+$` at request time — DeepSeek answered the
+    /// whole turn with HTTP 400 "Invalid 'tools[N].name': string does not
+    /// match pattern" while the tools still carried dotted `notes.*` names
+    /// (session 20261031_de93b4e8). The name is wire surface; keep it in pattern.
+    #[test]
+    fn tool_names_match_llm_wire_pattern() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(NotesStore::new(tmp.path(), "test", "main"));
+        for tool in create_notes_tools(store) {
+            let name = tool.name();
+            assert!(
+                !name.is_empty()
+                    && name.len() <= 64
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "tool name {name:?} violates the LLM wire pattern ^[a-zA-Z0-9_-]{{1,64}}$"
+            );
+        }
     }
 
     /// Smoke test: every tool's name/description/schema/metadata builds a legal value.
