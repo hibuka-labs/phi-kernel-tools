@@ -124,7 +124,7 @@ impl Tool for ListFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "List files and directories in a directory. Supports glob pattern filtering (e.g. '*.rs'), optional recursive mode (which respects .gitignore), and a limit on the number of entries returned. The path may be workspace-relative or absolute. Use this to explore project structure, find files by pattern, or understand directory layout."
+        "List files and directories in a directory, with per-file sizes. Supports glob pattern filtering (e.g. '*.rs'), optional recursive mode (which respects .gitignore), and a limit on the number of entries returned. The path may be workspace-relative or absolute. Use this to explore project structure, find files by pattern, or understand directory layout."
     }
 
     fn schema(&self) -> Value {
