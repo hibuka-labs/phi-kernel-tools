@@ -19,9 +19,11 @@ pub mod history;
 pub mod history_tools;
 pub mod notes;
 pub mod notes_tools;
+pub mod scope;
 
 pub use handoff::{extract_artifact_index, extract_ledger};
 pub use history::{HistoryStore, read_thread_hint};
 pub use history_tools::*;
 pub use notes::NotesStore;
 pub use notes_tools::*;
+pub use scope::SessionScope;

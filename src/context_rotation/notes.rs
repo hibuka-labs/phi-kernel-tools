@@ -7,6 +7,9 @@
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use super::scope::SessionScope;
 
 /// Maximum file size: 1 MB (1,000,000 UTF-8 bytes).
 const MAX_FILE_SIZE: usize = 1_000_000;
@@ -42,34 +45,55 @@ fn validate_path(path: &str) -> Result<(), String> {
 
 // ── NotesStore ──────────────────────────────────────────────────────────────
 
-/// Manages notes storage at `~/.phimint/notes/<session_id>/<agent_name>/`.
+/// Manages notes storage at `<base_dir>/notes/<session_id>/<agent_name>/`.
+///
+/// The session tree is resolved at call time through a shared
+/// [`SessionScope`], so one re-point (the `/resume` switch) moves every
+/// subsequent write — see [`HistoryStore`](super::HistoryStore).
 pub struct NotesStore {
-    /// Root directory for this agent's notes.
-    root: PathBuf,
+    scope: Arc<SessionScope>,
+    /// Agent name (the leaf of the notes path).
+    agent_name: String,
 }
 
 impl NotesStore {
     /// Create a new store for the given base directory, session ID, and agent name.
     ///
-    /// `base_dir` is typically `~/.phimint/`.
+    /// `base_dir` is typically `~/.phimint/`. The store is pinned to
+    /// `session_id` for life — use [`NotesStore::new_scoped`] to follow a
+    /// re-point.
     pub fn new(base_dir: &Path, session_id: &str, agent_name: &str) -> Self {
+        Self::new_scoped(
+            Arc::new(SessionScope::new(base_dir, session_id)),
+            agent_name,
+        )
+    }
+
+    /// A store serving whatever session `scope` currently points at.
+    pub fn new_scoped(scope: Arc<SessionScope>, agent_name: &str) -> Self {
         Self {
-            root: base_dir.join("notes").join(session_id).join(agent_name),
+            scope,
+            agent_name: agent_name.to_string(),
         }
+    }
+
+    /// This agent's notes root — resolved at call time.
+    fn root(&self) -> PathBuf {
+        self.scope.notes_dir(&self.agent_name)
     }
 
     /// Resolve and validate a relative path to an absolute path under root.
     fn resolve(&self, path: &str) -> Result<PathBuf, String> {
         validate_path(path)?;
-        let resolved = self.root.join(path);
+        let root = self.root();
+        let resolved = root.join(path);
         // Canonicalize to prevent symlink escapes (if path exists)
         // For new files, just check the parent
         if resolved.exists() {
             let canon = resolved
                 .canonicalize()
                 .map_err(|e| format!("path resolution failed: {}", e))?;
-            let root_canon = self
-                .root
+            let root_canon = root
                 .canonicalize()
                 .map_err(|e| format!("root resolution failed: {}", e))?;
             if !canon.starts_with(&root_canon) {
@@ -161,16 +185,17 @@ impl NotesStore {
 
     /// List files under an optional prefix.
     pub fn list_files(&self, prefix: Option<&str>, max_results: usize) -> Vec<String> {
+        let root = self.root();
         let search_root = match prefix {
             Some(p) => match validate_path(p) {
-                Ok(()) => self.root.join(p),
-                Err(_) => self.root.clone(),
+                Ok(()) => root.join(p),
+                Err(_) => root.clone(),
             },
-            None => self.root.clone(),
+            None => root.clone(),
         };
 
         let mut files = Vec::new();
-        self.walk_dir(&search_root, &self.root, &mut files, max_results);
+        self.walk_dir(&search_root, &root, &mut files, max_results);
         files.sort();
         files.truncate(max_results);
         files
@@ -213,7 +238,7 @@ impl NotesStore {
         let mut results = Vec::new();
 
         for file_path in &files {
-            let content = match fs::read_to_string(self.root.join(file_path)) {
+            let content = match fs::read_to_string(self.root().join(file_path)) {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -509,5 +534,26 @@ mod tests {
 
         let results = s.search_contents("needle", None, 100, 10);
         assert!(results.is_empty());
+    }
+
+    // ── SessionScope follow ──
+
+    /// Regression (2026-11-04): a store frozen on the launch session kept
+    /// writing one session's notes into another's tree after a mid-session
+    /// `/resume`. A scoped store resolves its root at call time, so a
+    /// re-point moves every subsequent write.
+    #[test]
+    fn scoped_store_follows_repoint() {
+        let tmp = TempDir::new().unwrap();
+        let scope = Arc::new(SessionScope::new(tmp.path(), "bootstrap"));
+        let s = NotesStore::new_scoped(Arc::clone(&scope), "main");
+        s.write_file("note.md", "before").unwrap();
+
+        scope.repoint("resumed");
+        s.write_file("note.md", "after").unwrap();
+
+        assert_eq!(s.read_file("note.md", None, None).unwrap(), "after");
+        let old = tmp.path().join("notes/bootstrap/main/note.md");
+        assert_eq!(fs::read_to_string(old).unwrap(), "before");
     }
 }
