@@ -179,6 +179,92 @@ fn message_texts(msg: &ChatMessage) -> Vec<&str> {
     }
 }
 
+/// Extract the plan state from an outgoing window's messages.
+///
+/// `update_plan` is a display-only protocol whose calls *replace* the whole
+/// checklist, so the live plan is the last call's `plan` plus the objective
+/// of the most recent call that carried one — subsequent calls may omit the
+/// objective and lean on the tool's session memory, which a fresh window
+/// does not have, so a previously-injected `<plan>` block (the hint slot
+/// echoes it into the window) supplies the fallback. Rendered verbatim — no
+/// step-text truncation, no entry caps: unlike the ledger, the plan is the
+/// task's spine and is never evicted. Returns the whole `<plan>` block for
+/// the hint slot and the `notes/plan_state.md` mirror.
+pub fn extract_plan_state(messages: &[ChatMessage]) -> Option<String> {
+    use agent_base::{PlanItem, PlanStepStatus, UpdatePlanArgs};
+
+    let mut objective: Option<String> = None;
+    let mut hinted_objective: Option<String> = None;
+    let mut plan: Option<Vec<PlanItem>> = None;
+
+    for msg in messages {
+        for text in message_texts(msg) {
+            if let Some(obj) = hinted_plan_objective(text) {
+                hinted_objective = Some(obj);
+            }
+        }
+        let ChatMessage::Assistant {
+            tool_calls: Some(calls),
+            ..
+        } = msg
+        else {
+            continue;
+        };
+        for call in calls {
+            if call.name != "update_plan" {
+                continue;
+            }
+            // A malformed or schema-breaking call is skipped exactly as the
+            // live tool would reject it — the last valid state stands.
+            let Ok(args) = serde_json::from_str::<UpdatePlanArgs>(&call.arguments) else {
+                continue;
+            };
+            if let Some(obj) = args.objective {
+                objective = Some(obj);
+            }
+            if !args.plan.is_empty() {
+                plan = Some(args.plan);
+            }
+        }
+    }
+
+    let plan = plan?;
+    let objective = objective.or(hinted_objective);
+
+    let mut out = String::from("<plan>\n");
+    out.push_str("Standing plan (update it with update_plan as you progress):\n");
+    if let Some(obj) = objective {
+        out.push_str("Objective: ");
+        out.push_str(&obj);
+        out.push('\n');
+    }
+    for item in plan {
+        let status = match item.status {
+            PlanStepStatus::Pending => "pending",
+            PlanStepStatus::InProgress => "in_progress",
+            PlanStepStatus::Completed => "completed",
+        };
+        out.push_str("- [");
+        out.push_str(status);
+        out.push_str("] ");
+        out.push_str(&item.step);
+        out.push('\n');
+    }
+    out.push_str("</plan>");
+    Some(out)
+}
+
+/// The `Objective: ` line of a previously-injected `<plan>` block — the
+/// objective-inheritance source when this window's calls omitted it.
+fn hinted_plan_objective(text: &str) -> Option<String> {
+    let start = text.find("<plan>")?;
+    let region = &text[start..];
+    let end = region.find("</plan>").unwrap_or(region.len());
+    region[..end]
+        .lines()
+        .find_map(|line| line.strip_prefix("Objective: ").map(str::to_string))
+}
+
 /// Map one tool call to a ledger line. `None` = not worth recording
 /// (context-management churn) or nothing extractable.
 fn ledger_entry(tool: &str, args_json: &str) -> Option<String> {
@@ -527,5 +613,115 @@ mod tests {
         let msgs = vec![ChatMessage::user(line.to_string())];
         let index = extract_artifact_index(&msgs).unwrap();
         assert!(index.contains(line), "{index}");
+    }
+
+    // ── extract_plan_state: the plan survives rotation, verbatim ──
+
+    #[test]
+    fn plan_state_reads_the_last_call_and_inherits_the_objective() {
+        let msgs = vec![assistant(
+            "",
+            vec![
+                call(
+                    "update_plan",
+                    serde_json::json!({
+                        "objective": "Install the Casdoor authentication system",
+                        "plan": [
+                            {"step": "Scaffold the module", "status": "completed"},
+                            {"step": "Wire the provider", "status": "pending"},
+                        ],
+                    }),
+                ),
+                // Follow-up calls may omit the objective (the tool remembers
+                // it) and replace the whole checklist.
+                call(
+                    "update_plan",
+                    serde_json::json!({
+                        "plan": [{"step": "Wire the provider", "status": "in_progress"}],
+                    }),
+                ),
+            ],
+        )];
+        let plan = extract_plan_state(&msgs).unwrap();
+        assert!(
+            plan.contains("Objective: Install the Casdoor authentication system"),
+            "{plan}"
+        );
+        assert!(plan.contains("- [in_progress] Wire the provider"), "{plan}");
+        assert!(
+            !plan.contains("Scaffold the module"),
+            "old steps are replaced: {plan}"
+        );
+    }
+
+    #[test]
+    fn plan_state_objective_falls_back_to_the_previous_hint_block() {
+        let prior_hint = "<plan>\nStanding plan (update it with update_plan as you progress):\n\
+             Objective: Ship the v2 landing page\n- [pending] a\n</plan>";
+        let msgs = vec![
+            ChatMessage::system(prior_hint),
+            assistant(
+                "",
+                vec![call(
+                    "update_plan",
+                    serde_json::json!({
+                        "plan": [{"step": "b", "status": "in_progress"}],
+                    }),
+                )],
+            ),
+        ];
+        let plan = extract_plan_state(&msgs).unwrap();
+        assert!(
+            plan.contains("Objective: Ship the v2 landing page"),
+            "{plan}"
+        );
+        assert!(plan.contains("- [in_progress] b"), "{plan}");
+    }
+
+    #[test]
+    fn plan_state_skips_malformed_calls_like_the_live_tool() {
+        let msgs = vec![assistant(
+            "",
+            vec![
+                call(
+                    "update_plan",
+                    serde_json::json!({"plan": [{"step": "keep me", "status": "pending"}]}),
+                ),
+                ToolCallMessage {
+                    id: "tc_bad".into(),
+                    name: "update_plan".into(),
+                    // Truncated arguments (the mimo truncation pathology).
+                    arguments: "{\"plan\": [{\"step\": \"dro".into(),
+                },
+            ],
+        )];
+        let plan = extract_plan_state(&msgs).unwrap();
+        assert!(plan.contains("- [pending] keep me"), "{plan}");
+    }
+
+    #[test]
+    fn plan_state_is_none_without_a_valid_plan_call() {
+        let msgs = vec![
+            assistant(
+                "",
+                vec![call("read_file", serde_json::json!({"path": "a"}))],
+            ),
+            assistant("", vec![]),
+        ];
+        assert!(extract_plan_state(&msgs).is_none());
+    }
+
+    #[test]
+    fn plan_state_step_text_is_verbatim() {
+        let long = "x".repeat(300);
+        let msgs = vec![assistant(
+            "",
+            vec![call(
+                "update_plan",
+                serde_json::json!({"plan": [{"step": long, "status": "pending"}]}),
+            )],
+        )];
+        let plan = extract_plan_state(&msgs).unwrap();
+        assert!(plan.contains(&long), "step text must not be truncated");
     }
 }

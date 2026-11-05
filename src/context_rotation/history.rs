@@ -81,6 +81,9 @@ impl MessageRecord {
                 content: self.content,
                 images: Vec::new(),
                 ephemeral: false,
+                // Legacy flat rows predate the synthetic flag and carry no
+                // provenance — assume real (no guessing from content).
+                synthetic: false,
             },
             "assistant" => ChatMessage::Assistant {
                 content: if self.content.is_empty() {
@@ -275,7 +278,26 @@ impl HistoryStore {
             .open(&file_path)?;
 
         let ts = chrono::Utc::now().to_rfc3339();
+        let mut degraded = 0usize;
         for (i, msg) in messages.iter().enumerate() {
+            // Lossless copy: keeps `tool_calls` / `tool_call_id` so the
+            // window can be replayed and restored, not just searched.
+            // A serialization failure degrades to the flat fields rather
+            // than losing the archive — but loudly: a degraded row can no
+            // longer round-trip through [`MessageRecord::into_message`].
+            let full = match serde_json::to_value(msg) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    degraded += 1;
+                    tracing::warn!(
+                        error = %e,
+                        window_id,
+                        index = i,
+                        "archived message lost its lossless payload; falling back to flat fields"
+                    );
+                    None
+                }
+            };
             let record = MessageRecord {
                 window: window_id,
                 index: i,
@@ -283,15 +305,19 @@ impl HistoryStore {
                 name: message_name(msg),
                 content: message_content(msg),
                 ts: ts.clone(),
-                // Lossless copy: keeps `tool_calls` / `tool_call_id` so the
-                // window can be replayed and restored, not just searched.
-                // A serialization failure degrades to the flat fields rather
-                // than losing the archive.
-                msg: serde_json::to_value(msg).ok(),
+                msg: full,
             };
             writeln!(file, "{}", serde_json::to_string(&record)?)?;
         }
         file.flush()?;
+        if degraded > 0 {
+            tracing::warn!(
+                window_id,
+                degraded,
+                total = messages.len(),
+                "archive window has degraded rows; replay/restore falls back to flat text"
+            );
+        }
 
         // Update metadata
         self.update_metadata(window_id, messages.len())?;

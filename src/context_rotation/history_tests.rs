@@ -560,6 +560,140 @@ fn load_all_messages_spans_windows_in_order() {
     assert!(matches!(&loaded[1], ChatMessage::User { content, .. } if content == "second window"));
 }
 
+// ── Lossless-archive assertion: the window must come back as it went in ──
+
+#[test]
+fn archive_round_trips_the_full_message_shapes() {
+    // Every shape the engine can hold, archived and rebuilt: compared as
+    // wire values so the never-persisted `ephemeral` flags don't count as
+    // loss. A regression here means a window can no longer be restored.
+    let tmp = TempDir::new().unwrap();
+    let store = HistoryStore::new(tmp.path(), "test_session");
+    let msgs = vec![
+        ChatMessage::system("You are phimint, a coding agent."),
+        ChatMessage::user("sow the nursing detail page"),
+        ChatMessage::user_synthetic("Tool calls failed: exec_command"),
+        ChatMessage::Assistant {
+            content: Some("looking".into()),
+            reasoning_content: Some("stale".into()),
+            thinking_signature: Some("sig".into()),
+            tool_calls: Some(vec![agent_base::ToolCallMessage {
+                id: "tc_1".into(),
+                name: "shell".into(),
+                arguments: "{\"cmd\":\"ls\"}".into(),
+            }]),
+        },
+        ChatMessage::Tool {
+            tool_call_id: "tc_1".into(),
+            name: Some("shell".into()),
+            content: "a.txt".into(),
+            images: Vec::new(),
+        },
+        ChatMessage::Custom {
+            role: "note".into(),
+            data: serde_json::json!({ "content": "hi" }),
+        },
+    ];
+    store.archive_window(1, &msgs).unwrap();
+
+    let loaded = store.load_window_messages(1);
+    assert_eq!(loaded.len(), msgs.len(), "one row in, one message out");
+    for (i, (before, after)) in msgs.iter().zip(&loaded).enumerate() {
+        assert_eq!(
+            serde_json::to_value(before).unwrap(),
+            serde_json::to_value(after).unwrap(),
+            "message {i} changed across the archive"
+        );
+    }
+    // Provenance specifically: a synthetic seed stays synthetic after
+    // restore, so a re-rotated window keeps it off the user trail.
+    assert!(matches!(
+        &loaded[2],
+        ChatMessage::User {
+            synthetic: true,
+            ..
+        }
+    ));
+}
+
+/// Regression fixtures copied from the head of session 20261103_4206f951's
+/// `windows/002.jsonl` and `004.jsonl` — the resumed windows that archived
+/// with a 3-row head. Rows written before the `synthetic` flag existed carry
+/// no key and decode as whatever the user role says: provenance is never
+/// guessed from content, even when the text is obviously a machine notice.
+#[test]
+fn real_window_head_rows_decode_with_provenance() {
+    let tmp = TempDir::new().unwrap();
+    let store = HistoryStore::new(tmp.path(), "20261103_4206f951");
+    let windows = tmp
+        .path()
+        .join("history")
+        .join("20261103_4206f951")
+        .join("windows");
+    fs::create_dir_all(&windows).unwrap();
+    fs::write(
+        windows.join("002.jsonl"),
+        concat!(
+            "{\"window\":2,\"index\":0,\"role\":\"system\",\"content\":\"You are phimint, a coding agent.\",\"ts\":\"t\",\"msg\":{\"System\":{\"content\":\"You are phimint, a coding agent.\"}}}\n",
+            "{\"window\":2,\"index\":1,\"role\":\"user\",\"content\":\"@pigsight-cloud/ 你帮我看下，接口要加到这个工程\",\"ts\":\"t\",\"msg\":{\"User\":{\"content\":\"@pigsight-cloud/ 你帮我看下，接口要加到这个工程\"}}}\n",
+            "{\"window\":2,\"index\":2,\"role\":\"user\",\"content\":\"Your previous context window was archived.\",\"ts\":\"t\",\"msg\":{\"User\":{\"content\":\"Your previous context window was archived.\"}}}\n",
+        ),
+    )
+    .unwrap();
+    fs::write(
+        windows.join("004.jsonl"),
+        concat!(
+            // The W4 head: a machine "Tool calls failed" notice archived as
+            // the last user message, untagged on disk.
+            "{\"window\":4,\"index\":0,\"role\":\"system\",\"content\":\"You are phimint, a coding agent.\",\"ts\":\"t\",\"msg\":{\"System\":{\"content\":\"You are phimint, a coding agent.\"}}}\n",
+            "{\"window\":4,\"index\":1,\"role\":\"user\",\"content\":\"Tool calls failed: exec_command\",\"ts\":\"t\",\"msg\":{\"User\":{\"content\":\"Tool calls failed: exec_command\"}}}\n",
+            "{\"window\":4,\"index\":2,\"role\":\"user\",\"content\":\"Your previous context window was archived.\",\"ts\":\"t\",\"msg\":{\"User\":{\"content\":\"Your previous context window was archived.\"}}}\n",
+        ),
+    )
+    .unwrap();
+
+    let w2 = store.load_window_messages(2);
+    assert_eq!(w2.len(), 3);
+    assert!(
+        matches!(&w2[0], ChatMessage::System { content, .. } if content == "You are phimint, a coding agent.")
+    );
+    assert!(matches!(
+        &w2[1],
+        ChatMessage::User {
+            synthetic: false,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &w2[2],
+        ChatMessage::User {
+            synthetic: false,
+            ..
+        }
+    ));
+
+    let w4 = store.load_window_messages(4);
+    assert!(
+        matches!(&w4[1], ChatMessage::User { content, synthetic: false, .. }
+            if content == "Tool calls failed: exec_command")
+    );
+
+    // A row that DOES carry the tag keeps it across the archive.
+    fs::write(
+        windows.join("005.jsonl"),
+        "{\"window\":5,\"index\":0,\"role\":\"user\",\"content\":\"Tool calls failed: exec_command\",\"ts\":\"t\",\"msg\":{\"User\":{\"content\":\"Tool calls failed: exec_command\",\"synthetic\":true}}}\n",
+    )
+    .unwrap();
+    let w5 = store.load_window_messages(5);
+    assert!(matches!(
+        &w5[0],
+        ChatMessage::User {
+            synthetic: true,
+            ..
+        }
+    ));
+}
+
 // ── SessionScope follow: the store must track a `/resume` re-point ──
 
 /// Regression (2026-11-04): a store frozen on the launch session kept
