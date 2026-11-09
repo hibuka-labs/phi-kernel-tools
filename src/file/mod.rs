@@ -13,11 +13,15 @@
 mod edit_file;
 mod list_files;
 mod read_file;
+mod read_image;
+mod url_fetch;
 mod write_file;
 
 pub use edit_file::EditFileTool;
 pub use list_files::ListFilesTool;
 pub use read_file::ReadFileTool;
+pub use read_image::ReadImageTool;
+pub use url_fetch::FetchPolicy;
 pub use write_file::WriteFileTool;
 
 #[cfg(feature = "fuzzing")]

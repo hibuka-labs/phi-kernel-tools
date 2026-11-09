@@ -8,6 +8,7 @@
 //! - **multi-agent**: spawn, send_message, followup_task, wait, list, close
 //! - **shell**: execute_command
 //! - **task_registry**: Generic task registry framework (business-agnostic)
+//! - **spill**: SpillSink seam (where truncated shell output goes)
 //!
 //! Each tool implements `agent_base::Tool` (or `TypedTool`) and delegates to
 //! the corresponding `agent_works` infrastructure types.
@@ -25,6 +26,9 @@
 
 /// Generic task registry framework (always available).
 pub mod task_registry;
+
+/// Shell-output overflow sink seam (always available; see the module docs).
+pub mod spill;
 
 #[cfg(feature = "file")]
 pub mod file;

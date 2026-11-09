@@ -1,6 +1,6 @@
 [package]
 name = "phi-kernel-tools"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 description = "Kernel tools for phi-agent — file system, multi-agent, and shell tools"
 license = "MIT"
@@ -18,12 +18,13 @@ context = []
 fuzzing = ["file"]
 
 [dependencies]
-agent-base = { version = "0.12.0" }
-agent-works = { version = "0.12.0", features = ["multi_agent"] }
+agent-base = { version = "0.13.0" }
+agent-works = { version = "0.13.0", features = ["multi_agent"] }
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
 ignore = "0.4"
 libc = "0.2"
+reqwest = { version = "0.13", features = ["stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "1", features = ["derive"] }
@@ -36,9 +37,11 @@ uuid = { version = "1", features = ["v4"] }
 criterion = { version = "0.5", features = ["html_reports"] }
 futures-core = "0.3"
 futures-util = "0.3"
+image = { version = "0.25", default-features = false, features = ["png"] }
 proptest = "1"
 tempfile = "3"
 tokio = { version = "1.52", features = ["full"] }
+wiremock = "0.6"
 
 [[bench]]
 name = "file_tools"
@@ -48,3 +51,7 @@ required-features = ["file"]
 [[test]]
 name = "background_shell_e2e"
 required-features = ["shell"]
+
+[[test]]
+name = "read_image_url_test"
+required-features = ["file"]

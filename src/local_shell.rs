@@ -9,15 +9,18 @@ use tokio::io::AsyncBufReadExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
+use crate::spill::{SpillSink, spill_marker};
 
 /// Local shell command execution tool.
 ///
 /// Executes arbitrary commands via `sh -c`, with support for timeout,
 /// cancellation, and working directory. Optionally supports background
-/// execution via an injected `BackgroundTaskRegistry`.
+/// execution via an injected `BackgroundTaskRegistry`, and full-copy spill of
+/// truncated output via an injected [`SpillSink`].
 pub struct LocalShellTool {
     timeout_ms: u64,
     registry: Option<Arc<BackgroundTaskRegistry>>,
+    spill: Option<Arc<dyn SpillSink>>,
 }
 
 impl LocalShellTool {
@@ -25,12 +28,22 @@ impl LocalShellTool {
         Self {
             timeout_ms,
             registry: None,
+            spill: None,
         }
     }
 
     /// Inject a background task registry. Enables `background: true` support.
     pub fn with_registry(mut self, registry: Arc<BackgroundTaskRegistry>) -> Self {
         self.registry = Some(registry);
+        self
+    }
+
+    /// Inject a spill sink for truncated output. When a result exceeds
+    /// `max_output_chars`, the full pre-truncation summary is spilled and the
+    /// truncation marker carries the artifact path; without a sink (or on a
+    /// sink write failure) the plain marker stands.
+    pub fn with_spill(mut self, spill: Arc<dyn SpillSink>) -> Self {
+        self.spill = Some(spill);
         self
     }
 }
@@ -55,11 +68,15 @@ fn format_result(
     }
 
     match exit_code {
+        // G7: success-with-output carries a trailing `[exit code: 0]` line so
+        // the model can confirm exit 0 without a verification re-run. The
+        // empty-success sentence and every failure/termination arm keep their
+        // exact vocabulary — only the three output arms gain the trailer.
         Some(0) => match (stdout.is_empty(), stderr.is_empty()) {
             (true, true) => "Command executed successfully with no output.".to_string(),
-            (false, true) => stdout.to_string(),
-            (true, false) => format!("stderr:\n{}", stderr),
-            (false, false) => format!("stdout:\n{}\n\nstderr:\n{}", stdout, stderr),
+            (false, true) => format!("{}\n[exit code: 0]", stdout),
+            (true, false) => format!("stderr:\n{}\n[exit code: 0]", stderr),
+            (false, false) => format!("stdout:\n{}\n\nstderr:\n{}\n[exit code: 0]", stdout, stderr),
         },
         Some(code) => format!(
             "[Command Failed (exit code: {})]\ncommand: {}\nstdout:\n{}\nstderr:\n{}",
@@ -97,6 +114,9 @@ fn is_sleep_poll(command: &str) -> bool {
         .is_some_and(|word| word == "sleep")
 }
 
+/// Plain truncation marker (no spill target available).
+pub(crate) const MARKER: &str = "...[output truncated]";
+
 /// Truncate a shell output string to the per-call output budget
 /// (`ToolContext::max_output_chars`), keeping both the head and the tail.
 ///
@@ -105,6 +125,12 @@ fn is_sleep_poll(command: &str) -> bool {
 /// middle is marked. This mirrors `read_file`/`list_files`: the tool
 /// self-truncates so the engine's hard reject never fires for a noisy command.
 pub(crate) fn truncate_output(s: &str, max_chars: Option<usize>) -> String {
+    truncate_with_marker(s, max_chars, MARKER)
+}
+
+/// [`truncate_output`] with a caller-chosen marker line — the spill path uses
+/// the marker that names the full-output artifact. Byte layout is identical.
+pub(crate) fn truncate_with_marker(s: &str, max_chars: Option<usize>, marker: &str) -> String {
     let Some(max_chars) = max_chars else {
         return s.to_string();
     };
@@ -113,9 +139,8 @@ pub(crate) fn truncate_output(s: &str, max_chars: Option<usize>) -> String {
         return s.to_string();
     }
 
-    const MARKER: &str = "...[output truncated]";
     // Reserve the marker + two joining newlines; head gets 1/3, tail 2/3.
-    let available = max_chars.saturating_sub(MARKER.chars().count() + 2);
+    let available = max_chars.saturating_sub(marker.chars().count() + 2);
     let head_chars = available / 3;
     let tail_chars = available - head_chars;
 
@@ -129,7 +154,29 @@ pub(crate) fn truncate_output(s: &str, max_chars: Option<usize>) -> String {
         .rev()
         .collect();
 
-    format!("{head}\n{MARKER}\n{tail}")
+    format!("{head}\n{marker}\n{tail}")
+}
+
+/// [`truncate_output`] that keeps the cut-away middle retrievable: when a cut
+/// actually fires and a sink is injected, the full pre-truncation summary is
+/// spilled (kind `"shell_output"`) and the marker carries the artifact path
+/// plus a `read_file` continuation hint. Sink absent or write-fail → the plain
+/// marker exactly (never a fake path).
+pub(crate) fn truncate_output_spilling(
+    s: &str,
+    max_chars: Option<usize>,
+    sink: Option<&dyn SpillSink>,
+) -> String {
+    let Some(max_chars) = max_chars else {
+        return s.to_string();
+    };
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    match spill_marker(sink, "shell_output", s) {
+        Some(marker) => truncate_with_marker(s, Some(max_chars), &marker),
+        None => truncate_output(s, Some(max_chars)),
+    }
 }
 
 #[async_trait]
@@ -441,7 +488,8 @@ impl Tool for LocalShellTool {
             summary.push('\n');
             summary.push_str(SLEEP_POLL_HINT);
         }
-        let summary = truncate_output(&summary, ctx.max_output_chars);
+        let summary =
+            truncate_output_spilling(&summary, ctx.max_output_chars, self.spill.as_deref());
         Ok(vec![Content::text(summary)])
     }
 }
@@ -672,391 +720,9 @@ impl Drop for ProcessGroupGuard {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::task_registry::TaskStatus;
-    use agent_base::tool::content_text;
-
-    #[test]
-    fn test_format_result_success() {
-        let result = format_result("echo hello", "hello", "", Some(0), false);
-        assert_eq!(result, "hello");
-    }
-
-    #[test]
-    fn test_format_result_stderr_only() {
-        let result = format_result("cmd", "", "error output", Some(0), false);
-        assert_eq!(result, "stderr:\nerror output");
-    }
-
-    #[test]
-    fn test_format_result_stdout_and_stderr() {
-        let result = format_result("cmd", "out", "err", Some(0), false);
-        assert_eq!(result, "stdout:\nout\n\nstderr:\nerr");
-    }
-
-    #[test]
-    fn test_format_result_terminated() {
-        let result = format_result("cmd", "", "sigterm", None, false);
-        assert!(result.contains("Command Terminated"));
-    }
-
-    #[test]
-    fn test_format_result_no_output() {
-        let result = format_result("true", "", "", Some(0), false);
-        assert!(result.contains("no output"));
-    }
-
-    #[test]
-    fn test_format_result_failure() {
-        let result = format_result("false", "", "error", Some(1), false);
-        assert!(result.contains("Command Failed"));
-        assert!(result.contains("exit code: 1"));
-    }
-
-    #[test]
-    fn test_format_result_timeout() {
-        let result = format_result("sleep 100", "", "", None, true);
-        assert!(result.contains("Command Timed Out"));
-    }
-
-    #[test]
-    fn test_name() {
-        let tool = LocalShellTool::new(30000);
-        assert_eq!(tool.name(), "execute_command");
-    }
-
-    #[test]
-    fn test_definition() {
-        let tool = LocalShellTool::new(30000);
-        assert_eq!(tool.name(), "execute_command");
-        assert!(tool.description().contains("shell"));
-        let schema = tool.schema();
-        assert_eq!(schema["type"], "object");
-        let required = schema["required"].as_array().unwrap();
-        assert!(required.contains(&json!("command")));
-    }
-
-    #[test]
-    fn test_metadata() {
-        let tool = LocalShellTool::new(30000);
-        let meta = tool.metadata();
-        assert_eq!(meta.name, "execute_command");
-        assert_eq!(meta.origin, "phi-kernel-tools");
-        assert_eq!(meta.version, env!("CARGO_PKG_VERSION"));
-        assert!(meta.description.contains("shell"));
-        assert!(meta.requirements.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_call_echo() {
-        let tool = LocalShellTool::new(30000);
-        let result = tool
-            .call(&json!({"command": "echo hello"}), &ToolContext::for_test())
-            .await
-            .unwrap();
-        assert!(content_text(&result).contains("hello"));
-    }
-
-    #[tokio::test]
-    async fn test_call_empty_command() {
-        let tool = LocalShellTool::new(30000);
-        let result = tool
-            .call(&json!({}), &ToolContext::for_test())
-            .await
-            .unwrap();
-        assert!(content_text(&result).contains("No command provided"));
-    }
-
-    #[tokio::test]
-    async fn test_call_failing_command() {
-        let tool = LocalShellTool::new(30000);
-        let result = tool
-            .call(&json!({"command": "exit 3"}), &ToolContext::for_test())
-            .await
-            .unwrap();
-        assert!(content_text(&result).contains("exit code: 3"));
-    }
-
-    #[tokio::test]
-    async fn test_call_working_dir() {
-        let tool = LocalShellTool::new(30000);
-        let result = tool
-            .call(
-                &json!({"command": "pwd", "working_dir": "/"}),
-                &ToolContext::for_test(),
-            )
-            .await
-            .unwrap();
-        let text = content_text(&result);
-        assert!(!text.contains("[Error]"));
-        assert!(text.contains('/'));
-    }
-
-    #[tokio::test]
-    async fn test_call_timeout() {
-        let tool = LocalShellTool::new(50);
-        let result = tool
-            .call(&json!({"command": "sleep 30"}), &ToolContext::for_test())
-            .await
-            .unwrap();
-        assert!(content_text(&result).contains("Timed Out"));
-    }
-
-    /// A timeout must kill the whole process tree, not just the direct `sh`
-    /// child — otherwise a grandchild (e.g. a `java` server launched by `mvn`)
-    /// leaks as an orphan. Here `sleep` is the grandchild: `sh` backgrounds it
-    /// and `wait`s, so on timeout both must die.
-    #[tokio::test]
-    async fn test_call_timeout_kills_descendants() {
-        let dir = tempfile::tempdir().unwrap();
-        let pidfile = dir.path().join("child.pid");
-        let pidpath = pidfile.to_str().unwrap().to_string();
-
-        // Background a long-lived `sleep` (grandchild), record its pid, then
-        // `wait` so the direct child stays alive alongside it.
-        let command = format!("sleep 60 & echo $! > '{pidpath}'; wait");
-        let tool = LocalShellTool::new(300);
-        let result = tool
-            .call(&json!({"command": command}), &ToolContext::for_test())
-            .await
-            .unwrap();
-        assert!(content_text(&result).contains("Timed Out"));
-
-        // The grandchild's pid was recorded before the timeout; after the group
-        // kill it must be gone. Poll — SIGKILL is async to the reporter, and a
-        // loaded CI runner can delay the death observation, so allow a generous
-        // 5s window (250 × 20ms) instead of a tight 1s poll.
-        let pid: u32 = std::fs::read_to_string(&pidfile)
-            .expect("grandchild pidfile should be written")
-            .trim()
-            .parse()
-            .expect("pidfile should contain a pid");
-
-        let mut alive = true;
-        for _ in 0..250 {
-            alive = std::process::Command::new("kill")
-                .arg("-0")
-                .arg(pid.to_string())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if !alive {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(!alive, "grandchild pid {pid} survived the timeout kill");
-    }
-
-    /// Per-call `timeout_ms` must override the tool-level default (foreground).
-    #[tokio::test]
-    async fn test_call_timeout_override() {
-        let tool = LocalShellTool::new(30000);
-        let result = tool
-            .call(
-                &json!({"command": "sleep 30", "timeout_ms": 100}),
-                &ToolContext::for_test(),
-            )
-            .await
-            .unwrap();
-        assert!(content_text(&result).contains("Timed Out"));
-    }
-
-    /// The pipeline watchdog budget must cover the per-call `timeout_ms` —
-    /// session 20261018_7844215b: a 660s promise was killed at the 600s
-    /// framework default because the watchdog never saw the argument. Slack
-    /// keeps the tool's own fuse the first to fire.
-    #[test]
-    fn call_timeout_ms_mirrors_per_call_budget() {
-        let tool = LocalShellTool::new(120_000);
-        assert_eq!(
-            tool.call_timeout_ms(&json!({"command": "x", "timeout_ms": 660_000})),
-            Some(660_000 + WATCHDOG_SLACK_MS)
-        );
-        assert_eq!(
-            tool.call_timeout_ms(&json!({"command": "x", "timeout_ms": 0})),
-            Some(0)
-        );
-        assert_eq!(
-            tool.call_timeout_ms(&json!({"command": "x", "background": true})),
-            Some(0)
-        );
-        assert_eq!(
-            tool.call_timeout_ms(&json!({"command": "x"})),
-            Some(120_000 + WATCHDOG_SLACK_MS)
-        );
-    }
-
-    /// `sleep` as the *first* word is the turn-blocking wait anti-pattern and
-    /// earns a hint; `sleep` inside a real script stays untouched.
-    #[test]
-    fn sleep_poll_detection_is_hint_only() {
-        assert!(is_sleep_poll("sleep 300; tail -4 log"));
-        assert!(is_sleep_poll("  sleep 5"));
-        assert!(!is_sleep_poll("./release.sh && sleep 1"));
-        assert!(!is_sleep_poll("cargo test"));
-    }
-
-    #[tokio::test]
-    async fn sleep_poll_timeout_result_carries_hint() {
-        let tool = LocalShellTool::new(50);
-        let result = tool
-            .call(&json!({"command": "sleep 30"}), &ToolContext::for_test())
-            .await
-            .unwrap();
-        let text = content_text(&result);
-        assert!(text.contains("Timed Out"), "timeout not reported:\n{text}");
-        assert!(text.contains("[hint]"), "hint missing:\n{text}");
-    }
-
-    /// `timeout_ms: 0` means "never kill": a command outliving the tool default
-    /// must finish instead of dying. Guards the from_millis(0) instant-kill
-    /// hazard (0 previously would have meant a 0ms fuse).
-    #[tokio::test]
-    async fn test_call_zero_timeout_is_unlimited() {
-        let tool = LocalShellTool::new(50);
-        let result = tool
-            .call(
-                &json!({"command": "sleep 0.5 && echo done", "timeout_ms": 0}),
-                &ToolContext::for_test(),
-            )
-            .await
-            .unwrap();
-        let text = content_text(&result);
-        assert!(
-            !text.contains("Timed Out"),
-            "0 must disable the fuse: {text}"
-        );
-        assert!(text.contains("done"));
-    }
-
-    /// Explicit `timeout_ms` must kill background tasks too — regression test
-    /// for the old code, which ignored the per-call timeout and fused every
-    /// background task at the tool-level default.
-    #[tokio::test]
-    async fn test_background_timeout_override() {
-        let registry = BackgroundTaskRegistry::new(8);
-        let tool = LocalShellTool::new(30000).with_registry(registry.clone());
-        let result = tool
-            .call(
-                &json!({"command": "sleep 30", "background": true, "timeout_ms": 200}),
-                &ToolContext::for_test(),
-            )
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_str(content_text(&result).trim())
-            .expect("background call returns JSON");
-        let tid = v["task_id"].as_str().unwrap().to_string();
-
-        // Poll until terminal — 200ms fuse + kill/drain latency.
-        let mut status = None;
-        for _ in 0..150 {
-            if let Some(snap) = registry.snapshot(&tid) {
-                status = Some(snap.status.clone());
-                if status.as_ref().unwrap().is_terminal() {
-                    break;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        assert_eq!(status, Some(BackgroundTaskStatus::TimedOut));
-    }
-
-    /// Background default (no timeout_ms) = unlimited: the task must still be
-    /// Running past the tool-level fuse. This is what keeps dev servers alive
-    /// under background=true instead of dying at the hardcoded 120s.
-    #[tokio::test]
-    async fn test_background_default_runs_indefinitely() {
-        let registry = BackgroundTaskRegistry::new(8);
-        let tool = LocalShellTool::new(300).with_registry(registry.clone());
-        let result = tool
-            .call(
-                &json!({"command": "sleep 30", "background": true}),
-                &ToolContext::for_test(),
-            )
-            .await
-            .unwrap();
-        let v: Value = serde_json::from_str(content_text(&result).trim()).unwrap();
-        let tid = v["task_id"].as_str().unwrap().to_string();
-
-        // Old behavior (fuse = tool default 300ms) would have killed it here.
-        tokio::time::sleep(Duration::from_millis(600)).await;
-        let snap = registry.snapshot(&tid).expect("task registered");
-        assert_eq!(snap.status, BackgroundTaskStatus::Running);
-
-        registry.cancel(&tid); // don't leak the sleeper
-    }
-
-    #[test]
-    fn test_truncate_output_unchanged_when_under_budget() {
-        assert_eq!(truncate_output("short", Some(100)), "short");
-        assert_eq!(truncate_output("short", None), "short");
-    }
-
-    #[test]
-    fn test_truncate_output_keeps_head_and_tail() {
-        let s: String = (0..1000).map(|i| format!("L{i:03}\n")).collect();
-        let out = truncate_output(&s, Some(200));
-        let n = out.chars().count();
-        assert!(n <= 200, "output exceeds budget: {n}");
-        assert!(out.starts_with("L000"), "head missing:\n{out}");
-        assert!(out.trim_end().ends_with("L999"), "tail missing:\n{out}");
-        assert!(out.contains("output truncated"), "marker missing:\n{out}");
-    }
-
-    #[tokio::test]
-    async fn test_call_self_truncates_large_output() {
-        let tool = LocalShellTool::new(30000);
-        let mut ctx = ToolContext::for_test();
-        ctx.max_output_chars = Some(200);
-        let result = tool
-            .call(&json!({"command": "seq 1 1000"}), &ctx)
-            .await
-            .unwrap();
-        let text = content_text(&result);
-        let n = text.chars().count();
-        assert!(n <= 200, "output exceeds budget: {n}");
-        assert!(text.contains("output truncated"), "marker missing:\n{text}");
-        assert!(text.starts_with('1'), "head missing:\n{text}");
-        assert!(text.trim_end().ends_with("1000"), "tail missing:\n{text}");
-    }
-}
+#[path = "local_shell_tests.rs"]
+mod tests;
 
 #[cfg(test)]
-mod proptests {
-    use super::*;
-    use proptest::prelude::*;
-
-    proptest! {
-        #[test]
-        fn truncate_output_respects_budget(s in ".*", max in 30..200usize) {
-            // max must be large enough to fit the marker + head/tail
-            let result = truncate_output(&s, Some(max));
-            prop_assert!(result.chars().count() <= max,
-                "output {} chars exceeds budget {}", result.chars().count(), max);
-        }
-
-        #[test]
-        fn truncate_output_no_panic(s in ".*", max in 0..500usize) {
-            let _ = truncate_output(&s, Some(max));
-        }
-
-        #[test]
-        fn format_result_does_not_panic(
-            command in ".*",
-            stdout in ".*",
-            stderr in ".*",
-            exit_code in proptest::option::of(0i32..128),
-            timed_out in proptest::bool::ANY,
-        ) {
-            let _ = format_result(&command, &stdout, &stderr, exit_code, timed_out);
-        }
-
-        #[test]
-        fn truncate_output_short_string_unchanged(s in "[a-z]{0,50}") {
-            let result = truncate_output(&s, Some(100));
-            prop_assert_eq!(result, s);
-        }
-    }
-}
+#[path = "local_shell_proptests.rs"]
+mod proptests;

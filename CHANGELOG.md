@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-09
+
+### Added
+- **`read_image` — one entry point for a picture the model should look at**,
+  whether it lives on disk or behind an http(s) URL. The result is the
+  vision channel's native shape: a metadata text line (dimensions, format,
+  size) plus the bytes as an image content. Type is sniffed from magic bytes
+  (an HTML page claiming to be a PNG is refused), and the URL fetch refuses
+  anything that is not a public address.
+- **`spill` — oversized output goes to the artifact store** instead of
+  ending in a truncation marker; the artifact is fetched back exactly like a
+  code-cell artifact.
+
+### Changed
+- **Breaking (dependency):** `agent-base` 0.13.0 and `agent-works` 0.13.0
+  (the image budget and the artifact store live upstream).
+- **`read_file` takes `paths: [...]`** for batched multi-file reads.
+- **A session-scoped store can be re-pointed**, so a resumed session writes
+  its audit trail into its own tree instead of the bootstrap session's.
+
+### Fixed
+- **`list_files` says what it returns** — the per-file sizes are named in the
+  tool description.
+
 ## [0.11.0] - 2026-10-24
 
 ### Added
