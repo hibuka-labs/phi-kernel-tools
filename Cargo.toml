@@ -57,3 +57,11 @@ required-features = ["shell"]
 [[test]]
 name = "read_image_url_test"
 required-features = ["file"]
+
+# The pty e2e drives the shell feature's task registry (local_shell /
+# background_shell / task_input). Without `required-features` a default-feature
+# build tries to compile it and dies on unresolved imports, so the crate's
+# default feature set must stay buildable.
+[[test]]
+name = "pty_e2e_test"
+required-features = ["shell"]
