@@ -28,27 +28,23 @@
 //!
 //! All features are opt-in. Use `full` to enable all.
 
-/// Generic task registry framework (always available).
+// Module docs live in each module file as inner `//!` comments. Do NOT add an
+// outer `///` doc here: rustdoc then merges the two and resolves the inner
+// links in the crate-root scope, so a module's own items (`PromptClass`,
+// `TermSession`, ...) stop resolving and `-D warnings` fails the doc build.
+
 pub mod task_registry;
 
-/// Shell-output overflow sink seam (always available; see the module docs).
 pub mod spill;
 
-/// Interactive-prompt vocabulary + matcher (always available; mechanism only,
-/// answer policy lives in the product layer).
 pub mod interaction;
 
-/// Terminal sessions — the PTY transport seam (`TermSession` + `LocalPty`).
-/// Gated with `shell`: PTY tasks are shell tasks, and process-group kill
-/// lives with the shell executor.
 #[cfg(feature = "shell")]
 pub mod term_session;
 
-/// PTY background task supervisor (prompt detection over the screen tail).
 #[cfg(feature = "shell")]
 pub mod pty_task;
 
-/// `task_input` — feed a running PTY task's terminal (answer policy tiers).
 #[cfg(feature = "shell")]
 pub mod task_input;
 

@@ -5,7 +5,7 @@
 //!
 //! - the three tiers ([`PolicyTier`]): `Auto` (deterministic safe answer,
 //!   direct send), `Cache` (the model picks, a human nods once per
-//!   [`Self::send_action_key`], later sends go direct), `Stop` (never send —
+//!   [`PromptPolicy::send_action_key`], later sends go direct), `Stop` (never send —
 //!   return `needs user`);
 //! - the hard boundary: Password / 2FA / SshHostKey / Unknown always map to
 //!   `Stop`, whatever the table says. Secrets are typed by the human at the

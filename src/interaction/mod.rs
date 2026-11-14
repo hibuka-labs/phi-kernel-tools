@@ -104,7 +104,7 @@ pub fn strip_ansi(text: &str) -> String {
 }
 
 /// Match an **ANSI-stripped** output tail against the prompt vocabulary.
-/// First match wins; the row order in [`patterns`] is the priority ladder
+/// First match wins; the row order in the pattern table is the priority ladder
 /// (Password above all: a tail carrying both `[Y/n]` and `Password:` reports
 /// `Password`).
 pub fn match_prompt(ansi_stripped_tail: &str) -> Option<PromptClass> {

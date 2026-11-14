@@ -53,7 +53,7 @@ impl ScreenBuffer {
 
     /// Append a decoded chunk (possibly empty — an empty push still counts as
     /// a change event, which is how reader EOF wakes the supervisor). Bounded
-    /// to [`SCREEN_TAIL_LIMIT`] bytes, sliced at a char boundary.
+    /// to `SCREEN_TAIL_LIMIT` bytes, sliced at a char boundary.
     pub fn push_chunk(&self, chunk: &str) {
         if !chunk.is_empty() {
             let mut st = self.inner.lock().unwrap();
