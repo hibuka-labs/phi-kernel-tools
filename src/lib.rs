@@ -9,6 +9,10 @@
 //! - **shell**: execute_command
 //! - **task_registry**: Generic task registry framework (business-agnostic)
 //! - **spill**: SpillSink seam (where truncated shell output goes)
+//! - **interaction**: interactive-prompt vocabulary + matcher (pure functions)
+//! - **term_session**: PTY transport seam (`TermSession` + `LocalPty`)
+//! - **pty_task**: PTY background task supervisor (prompt detection loop)
+//! - **task_input**: feed a PTY task's terminal (answer policy tiers)
 //!
 //! Each tool implements `agent_base::Tool` (or `TypedTool`) and delegates to
 //! the corresponding `agent_works` infrastructure types.
@@ -20,7 +24,7 @@
 //! | `file` | ReadFileTool, WriteFileTool, ListFilesTool |
 //! | `context_rotation` | NotesStore, HistoryStore, extract_ledger + 9 LLM tools |
 //! | `multi-agent` | 6 multi-agent tools |
-//! | `shell` | LocalShellTool, BackgroundTaskRegistry |
+//! | `shell` | LocalShellTool, BackgroundTaskRegistry, PTY task surface (task_input/task_output) |
 //!
 //! All features are opt-in. Use `full` to enable all.
 
@@ -29,6 +33,24 @@ pub mod task_registry;
 
 /// Shell-output overflow sink seam (always available; see the module docs).
 pub mod spill;
+
+/// Interactive-prompt vocabulary + matcher (always available; mechanism only,
+/// answer policy lives in the product layer).
+pub mod interaction;
+
+/// Terminal sessions — the PTY transport seam (`TermSession` + `LocalPty`).
+/// Gated with `shell`: PTY tasks are shell tasks, and process-group kill
+/// lives with the shell executor.
+#[cfg(feature = "shell")]
+pub mod term_session;
+
+/// PTY background task supervisor (prompt detection over the screen tail).
+#[cfg(feature = "shell")]
+pub mod pty_task;
+
+/// `task_input` — feed a running PTY task's terminal (answer policy tiers).
+#[cfg(feature = "shell")]
+pub mod task_input;
 
 #[cfg(feature = "file")]
 pub mod file;

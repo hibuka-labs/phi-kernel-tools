@@ -309,6 +309,14 @@ impl<E: TaskEntry> TaskRegistry<E> {
         self.status_rx.clone()
     }
 
+    /// Bump the change watch after an entry mutation waiters care about
+    /// (e.g. a waiting-input marker set through `with_entry_mut`, which does
+    /// not touch the status). `send` notifies receivers even though the
+    /// payload is unchanged.
+    pub fn notify_change(&self) {
+        let _ = self.status_tx.send(());
+    }
+
     /// Shutdown: cancel all running tasks and clear the registry.
     pub fn shutdown(&self) {
         let mut map = self.slots.write().unwrap();

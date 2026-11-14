@@ -45,6 +45,8 @@ fn done_snapshot(stdout: &str, stderr: &str) -> BackgroundTaskSnapshot {
         stderr: stderr.to_string(),
         exit_code: Some(0),
         consumed: false,
+        pty: false,
+        waiting_input: None,
     }
 }
 
@@ -196,6 +198,8 @@ fn output_tail_merges_stdout_and_stderr_with_cap() {
         stderr: "boom\n".into(),
         exit_code: Some(0),
         consumed: false,
+        pty: false,
+        waiting_input: None,
     };
     let tail = snap.output_tail(1024);
     assert!(tail.contains("line1"), "stdout kept: {tail}");

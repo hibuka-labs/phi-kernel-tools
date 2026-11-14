@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-14
+
+### Added
+- **The terminal stops being a black box.** A PTY-backed task registry
+  (`pty_task`), a term session that owns a real pty (`term_session`), and an
+  interactive-prompt detector (`interaction/`) that turns "the command is
+  stuck on a Y/N prompt" into something the model can *see* — the detector is
+  a pure, policy-free matcher over output tails that reports the prompt's
+  shape (password / ssh host key / pager / confirm / menu / press-enter) and
+  never decides what to send.
+- **`task_input` — send an answer to a running task.** The model reads the
+  screen, decides what to answer, and sends it here. Three policy tiers
+  govern the send: `Auto` (deterministic safe answer, straight through),
+  `Cache` (first send per action key asks once, later sends go direct), and
+  `Stop` (the hard boundary — password, 2FA, ssh host key, unknown patterns:
+  **zero bytes leave the tool** and it returns `[needs user]`). The consent
+  channel is `agent_base`'s `InteractionChannel` seam; with no channel
+  mounted, a cache-tier send fails closed rather than answering for the user.
+- **`local_shell` reports a blocked prompt instead of hanging.** A shell
+  command that waits on input now surfaces the prompt as a notice the model
+  can act on.
+
+### Changed
+- **Breaking (dependency):** `agent-base` requirement bumped from 0.13.0 to
+  0.14.0 and `agent-works` from 0.13.0 to 0.14.0, keeping the framework on a
+  single version of each family crate alongside phi-agent 0.22.0.
+
+
+
 ## [0.13.0] - 2026-11-09
 
 ### Added

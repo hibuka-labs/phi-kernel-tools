@@ -20,9 +20,11 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::interaction::{WaitingPrompt, format_waiting_block_for_task};
 use crate::local_shell::{MARKER, kill_process_group, truncate_with_marker};
 use crate::spill::{SpillSink, spill_marker};
 use crate::task_registry::{TaskEntry, TaskRegistry as GenericRegistry, TaskStatus};
+use crate::term_session::TermSession;
 
 // ── Shell-specific types ──────────────────────────────────────────────
 
@@ -52,7 +54,7 @@ impl TaskStatus for BackgroundTaskStatus {
 }
 
 /// Shell task entry (business layer implements `TaskEntry`).
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ShellTaskEntry {
     /// Task identifier (bg_* format).
     pub id: String,
@@ -74,6 +76,29 @@ pub struct ShellTaskEntry {
     exit_code: Option<i32>,
     /// Process-group id of the spawned child (unix only).
     child_pgid: Option<u32>,
+    /// PTY session handle for `pty: true` tasks — input goes here
+    /// (`task_input`). `None` for plain pipe tasks.
+    session: Option<Arc<dyn TermSession>>,
+    /// Set while the task is blocked on a detected interactive prompt.
+    waiting_input: Option<WaitingPrompt>,
+}
+
+/// Manual `Debug`: `Arc<dyn TermSession>` has no `Debug`, and the entry's
+/// useful facts are all scalars.
+impl std::fmt::Debug for ShellTaskEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellTaskEntry")
+            .field("id", &self.id)
+            .field("command", &self.command)
+            .field("working_dir", &self.working_dir)
+            .field("timeout_ms", &self.timeout_ms)
+            .field("status", &self.status)
+            .field("exit_code", &self.exit_code)
+            .field("child_pgid", &self.child_pgid)
+            .field("pty", &self.session.is_some())
+            .field("waiting_input", &self.waiting_input)
+            .finish()
+    }
 }
 
 impl TaskEntry for ShellTaskEntry {
@@ -111,13 +136,54 @@ impl ShellTaskEntry {
             stderr: String::new(),
             exit_code: None,
             child_pgid: pgid,
+            session: None,
+            waiting_input: None,
         }
+    }
+
+    /// Attach the PTY session handle (`pty: true` tasks).
+    fn with_session(mut self, session: Arc<dyn TermSession>) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// The PTY session handle, for `task_input` sends and screen reads.
+    pub fn session(&self) -> Option<Arc<dyn TermSession>> {
+        self.session.clone()
+    }
+
+    /// Whether this task runs under a PTY (can receive input).
+    pub fn is_pty(&self) -> bool {
+        self.session.is_some()
+    }
+
+    /// The prompt this task is currently blocked on, if detection fired.
+    pub fn waiting_input(&self) -> Option<&WaitingPrompt> {
+        self.waiting_input.as_ref()
+    }
+
+    /// Mark (or refresh) the waiting-input state.
+    pub fn set_waiting_input(&mut self, prompt: WaitingPrompt) {
+        self.waiting_input = Some(prompt);
+    }
+
+    /// Clear the waiting-input state (input sent, or output resumed).
+    pub fn clear_waiting_input(&mut self) {
+        self.waiting_input = None;
     }
 
     /// Appends output to stdout buffer with bounding.
     pub fn append_stdout(&mut self, line: &str) {
         self.stdout.push_str(line);
         self.stdout.push('\n');
+        Self::bound_buffer(&mut self.stdout);
+    }
+
+    /// Appends a raw chunk (no newline added) — PTY screen stream, where
+    /// prompts arrive without trailing newlines and line-splitting would hide
+    /// them. Same bounding as [`Self::append_stdout`].
+    pub fn append_stdout_raw(&mut self, chunk: &str) {
+        self.stdout.push_str(chunk);
         Self::bound_buffer(&mut self.stdout);
     }
 
@@ -193,6 +259,10 @@ pub struct BackgroundTaskSnapshot {
     /// Whether `task_output` has already returned this task's terminal output
     /// (consumed). Consumed entries are GC-eligible immediately.
     pub consumed: bool,
+    /// Whether the task runs under a PTY (can receive input).
+    pub pty: bool,
+    /// The interactive prompt the task is blocked on, if detection fired.
+    pub waiting_input: Option<WaitingPrompt>,
 }
 
 /// The last `max_bytes` bytes of `s`, never cutting a UTF-8 code point.
@@ -229,6 +299,8 @@ impl BackgroundTaskSnapshot {
             stderr: snap.entry.stderr.clone(),
             exit_code: snap.entry.exit_code,
             consumed: snap.consumed,
+            pty: snap.entry.is_pty(),
+            waiting_input: snap.entry.waiting_input().cloned(),
         }
     }
 
@@ -309,6 +381,44 @@ impl BackgroundTaskRegistry {
         Ok(id)
     }
 
+    /// Register a PTY task: same entry, plus the session handle `task_input`
+    /// sends through.
+    pub fn register_pty(
+        &self,
+        command: &str,
+        working_dir: Option<&str>,
+        cancel_token: CancellationToken,
+        pgid: Option<u32>,
+        timeout_ms: u64,
+        session: Arc<dyn TermSession>,
+    ) -> Result<String, String> {
+        let id = format!("bg_{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let entry = ShellTaskEntry::new(
+            id.clone(),
+            command.to_string(),
+            working_dir.map(String::from),
+            pgid,
+            timeout_ms,
+        )
+        .with_session(session);
+
+        self.inner
+            .register(entry, cancel_token)
+            .map_err(|_| "too many background tasks".to_string())?;
+
+        Ok(id)
+    }
+
+    /// The PTY session handle of a task (`None` for pipe tasks).
+    pub fn pty_session(&self, id: &str) -> Option<Arc<dyn TermSession>> {
+        self.inner
+            .slots
+            .read()
+            .unwrap()
+            .get(id)
+            .and_then(|slot| slot.entry.session())
+    }
+
     /// Append output lines from the background executor.
     ///
     /// Maintains a bounded buffer per stream: head 8K + tail 24K chars.
@@ -321,6 +431,29 @@ impl BackgroundTaskRegistry {
                 entry.append_stderr(line);
             }
         });
+    }
+
+    /// Append a raw PTY chunk to the task's stdout mirror (no newline).
+    pub fn append_output_raw(&self, id: &str, chunk: &str) {
+        self.inner.with_entry_mut(id, |entry| {
+            entry.append_stdout_raw(chunk);
+        });
+    }
+
+    /// Mark (or refresh) the task's waiting-input state and wake waiters.
+    pub fn set_waiting_input(&self, id: &str, prompt: WaitingPrompt) {
+        self.inner.with_entry_mut(id, |entry| {
+            entry.set_waiting_input(prompt);
+        });
+        self.inner.notify_change();
+    }
+
+    /// Clear the task's waiting-input state and wake waiters.
+    pub fn clear_waiting_input(&self, id: &str) {
+        self.inner.with_entry_mut(id, |entry| {
+            entry.clear_waiting_input();
+        });
+        self.inner.notify_change();
     }
 
     /// Set the process-group id for a task.
@@ -415,6 +548,36 @@ impl BackgroundTaskRegistry {
             .map(|snap| BackgroundTaskSnapshot::from_generic(&snap))
     }
 
+    /// Wait until the task reaches a terminal state **or** blocks on a
+    /// detected interactive prompt — the `task_output(wait: true)` early
+    /// return: a blocked task is observable the moment detection fires, not
+    /// at the timeout.
+    pub async fn wait_input_or_terminal(
+        &self,
+        id: &str,
+        timeout: Duration,
+    ) -> Option<BackgroundTaskSnapshot> {
+        let deadline = Instant::now() + timeout;
+        let mut rx = self.inner.watch();
+        loop {
+            match self.snapshot(id) {
+                None => return None,
+                Some(snap) => {
+                    if snap.status.is_terminal() || snap.waiting_input.is_some() {
+                        return Some(snap);
+                    }
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return self.snapshot(id);
+            }
+            if tokio::time::timeout(remaining, rx.changed()).await.is_err() {
+                return self.snapshot(id);
+            }
+        }
+    }
+
     /// Returns a `watch::Receiver` for TUI to detect status changes.
     pub fn watch(&self) -> tokio::sync::watch::Receiver<()> {
         self.inner.watch()
@@ -467,6 +630,31 @@ impl TaskOutputTool {
         self.spill = Some(spill);
         self
     }
+
+    /// The status envelope for one snapshot. For a PTY task the stdout face is
+    /// the live terminal screen — fetched fresh at read time (the pipe buffers
+    /// are empty by construction; there is no mirror copy to drift).
+    async fn render(&self, snap: &BackgroundTaskSnapshot, ctx: &ToolContext) -> String {
+        let mut display = snap.clone();
+        // A live session handle exists iff this is a PTY task.
+        if let Some(session) = self.registry.pty_session(&snap.id) {
+            let budget = ctx.max_output_chars.unwrap_or(16 * 1024);
+            display.stdout = session.read_screen(budget).await;
+        }
+        render_status(&display, ctx.max_output_chars, self.spill.as_deref())
+    }
+}
+
+/// The `[waiting for input]` block when a live task is blocked on a detected
+/// prompt — `task_output`'s early return (a terminal task renders its status
+/// instead, even if the tail still shows a stale prompt).
+fn waiting_block(snap: &BackgroundTaskSnapshot) -> Option<String> {
+    if snap.status.is_terminal() {
+        return None;
+    }
+    snap.waiting_input
+        .as_ref()
+        .map(|p| format_waiting_block_for_task(&p.class, &p.tail))
 }
 
 fn format_status(snap: &BackgroundTaskSnapshot, max_chars: Option<usize>, marker: &str) -> Value {
@@ -557,6 +745,8 @@ impl Tool for TaskOutputTool {
 
     fn description(&self) -> &'static str {
         "Check or wait for a background SHELL task's result. Use `wait: true` to block until completion.\n\
+         For a PTY task (execute_command with pty: true) the stdout field is the live terminal screen.\n\
+         When the task is blocked on an interactive prompt the call returns a `[waiting for input]` block early instead of waiting — answer it with task_input.\n\
          Scope guard (session 20260919_f65b754c: 12 wasted polls): this only\n\
          accepts `bg_*` ids returned by `execute_command` with `background: true`.\n\
          Sub-agent results are NOT fetchable here — they are pushed to you\n\
@@ -626,18 +816,24 @@ impl Tool for TaskOutputTool {
                 .clamp(1_000, 300_000);
             let timeout = Duration::from_millis(timeout_ms);
 
-            match self.registry.wait(&task_id, timeout).await {
+            match self
+                .registry
+                .wait_input_or_terminal(&task_id, timeout)
+                .await
+            {
                 Some(snap) => {
+                    if let Some(block) = waiting_block(&snap) {
+                        // Blocked on a prompt: return early instead of
+                        // waiting out the timeout (spec: task_output early
+                        // return). Not consumed — the task is still live.
+                        return Ok(vec![Content::text(block)]);
+                    }
                     // Full terminal output delivered — the entry becomes
                     // GC-eligible. Partial (still-running) reads don't count.
                     if snap.status.is_terminal() {
                         self.registry.mark_consumed(&task_id);
                     }
-                    Ok(vec![Content::text(render_status(
-                        &snap,
-                        ctx.max_output_chars,
-                        self.spill.as_deref(),
-                    ))])
+                    Ok(vec![Content::text(self.render(&snap, ctx).await)])
                 }
                 None => Ok(vec![Content::text(format!(
                     "{}",
@@ -650,14 +846,13 @@ impl Tool for TaskOutputTool {
         } else {
             match self.registry.snapshot(&task_id) {
                 Some(snap) => {
+                    if let Some(block) = waiting_block(&snap) {
+                        return Ok(vec![Content::text(block)]);
+                    }
                     if snap.status.is_terminal() {
                         self.registry.mark_consumed(&task_id);
                     }
-                    Ok(vec![Content::text(render_status(
-                        &snap,
-                        ctx.max_output_chars,
-                        self.spill.as_deref(),
-                    ))])
+                    Ok(vec![Content::text(self.render(&snap, ctx).await)])
                 }
                 None => Ok(vec![Content::text(format!(
                     "{}",

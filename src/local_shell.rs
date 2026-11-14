@@ -2,14 +2,22 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_base::{AgentResult, Content, Tool, ToolContext};
+use agent_base::types::NoticeKind;
+use agent_base::{AgentResult, Content, Tool, ToolContext, UserEvent};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use tokio::io::AsyncBufReadExt;
 use tokio_util::sync::CancellationToken;
 
 use crate::background_shell::{BackgroundTaskRegistry, BackgroundTaskStatus};
+use crate::interaction::{PromptClass, notice_text};
+use crate::pty_task::{PromptNoticeSink, run_pty_background_task};
 use crate::spill::{SpillSink, spill_marker};
+use crate::term_session::LocalPty;
+
+/// Default PTY geometry for `pty: true` tasks (what a plain terminal gives).
+const PTY_COLS: u16 = 80;
+const PTY_ROWS: u16 = 24;
 
 /// Local shell command execution tool.
 ///
@@ -21,6 +29,7 @@ pub struct LocalShellTool {
     timeout_ms: u64,
     registry: Option<Arc<BackgroundTaskRegistry>>,
     spill: Option<Arc<dyn SpillSink>>,
+    prompt_quiet_ms: u64,
 }
 
 impl LocalShellTool {
@@ -29,6 +38,7 @@ impl LocalShellTool {
             timeout_ms,
             registry: None,
             spill: None,
+            prompt_quiet_ms: crate::interaction::PROMPT_QUIET_MS,
         }
     }
 
@@ -44,6 +54,14 @@ impl LocalShellTool {
     /// sink write failure) the plain marker stands.
     pub fn with_spill(mut self, spill: Arc<dyn SpillSink>) -> Self {
         self.spill = Some(spill);
+        self
+    }
+
+    /// Override the prompt-quiet window (ms): how long the output must stay
+    /// quiet after a tail matches an interactive prompt before the foreground
+    /// command is killed and `[waiting for input]` is returned.
+    pub fn with_prompt_quiet(mut self, ms: u64) -> Self {
+        self.prompt_quiet_ms = ms;
         self
     }
 }
@@ -190,6 +208,7 @@ impl Tool for LocalShellTool {
          - Foreground (default): blocks until the command exits, or is killed at timeout_ms (default 120000).\n\
          - Background (background=true): returns a task_id immediately and keeps running with no timeout by default; its exit sends a system notification. For a server, an exit notification means it died — investigate via task_output(task_id). Read output anytime with task_output; stop with task_cancel.\n\
          - timeout_ms: kill the process after N ms; 0 = never kill. Background defaults to 0 (indefinite), foreground to 120000. Set it only on background jobs that must finish within a bound (e.g. a long test run).\n\
+         - PTY (pty=true, background only): runs under a terminal, so interactive prompts work. task_output returns `[waiting for input]` when one blocks the task; answer it with task_input. Use for programs that need a TTY (ssh, REPLs, installers, pagers).\n\
          Decide like a person: servers/watchers (vite, mvn spring-boot:run) → background; verify they listen (e.g. lsof -ti:PORT) before reporting success, then leave them alone. Long one-shot jobs (mvn test, npm install) → background with a generous timeout_ms, or foreground when quick. For large expected output, limit lines (grep ... | head -n 30).\n\
          NEVER wait by sleeping in a foreground call (`sleep 120; tail log` burns a whole turn and blocks the conversation): start the job with background=true and let its completion notice wake you, then read progress with task_output."
     }
@@ -209,6 +228,11 @@ impl Tool for LocalShellTool {
                 "background": {
                     "type": "boolean",
                     "description": "Run in background. Returns immediately with a task_id. Use task_output to check results.",
+                    "default": false
+                },
+                "pty": {
+                    "type": "boolean",
+                    "description": "Run under a pseudo-terminal (requires background: true). Interactive prompts work — answer them with task_input.",
                     "default": false
                 },
                 "timeout_ms": {
@@ -277,6 +301,17 @@ impl Tool for LocalShellTool {
             .and_then(Value::as_bool)
             .unwrap_or(false);
 
+        // A terminal matters only while the task keeps running between turns:
+        // `pty: true` is a background-only surface.
+        let is_pty = args.get("pty").and_then(Value::as_bool).unwrap_or(false);
+        if is_pty && !is_background {
+            return Ok(vec![Content::text(
+                "[Error]: pty: true requires background: true — an interactive \
+                 terminal is only useful while the task keeps running between turns."
+                    .to_string(),
+            )]);
+        }
+
         // Per-call timeout; 0 = never kill. Background defaults to unlimited —
         // dev servers are legitimate long-running processes, and the old
         // hard-wired fuse turned background=true into "die at 120s". Foreground
@@ -301,6 +336,72 @@ impl Tool for LocalShellTool {
                         .to_string(),
                 )]);
             };
+
+            if is_pty {
+                let session = match LocalPty::open(&command, working_dir, PTY_COLS, PTY_ROWS) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        return Ok(vec![Content::text(format!(
+                            "[Error]: failed to open PTY: {}",
+                            e
+                        ))]);
+                    }
+                };
+                let cancel_token = CancellationToken::new();
+                let task_id = match registry.register_pty(
+                    &command,
+                    working_dir,
+                    cancel_token.clone(),
+                    session.pid(),
+                    timeout_ms,
+                    session.clone(),
+                ) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        return Ok(vec![Content::text(format!("[Error]: {}", e))]);
+                    }
+                };
+
+                // Detection notice rides the run's user-event channel, tagged
+                // with this tool as its source. Attention (amber), not Warning
+                // (red): a prompt waiting for an answer is "look at this",
+                // not "this failed".
+                let notice_ctx = ctx.clone();
+                let notice_tid = task_id.clone();
+                let notice: PromptNoticeSink = Arc::new(move |class: &PromptClass, tail: &str| {
+                    notice_ctx.emit_user_event(UserEvent::Notice {
+                        kind: NoticeKind::Attention,
+                        source: "tool:execute_command".to_string(),
+                        text: notice_text(&notice_tid, class, tail),
+                    });
+                });
+
+                let reg = registry.clone();
+                let tid = task_id.clone();
+                let quiet_ms = self.prompt_quiet_ms;
+                tokio::spawn(async move {
+                    run_pty_background_task(
+                        &reg,
+                        &tid,
+                        session,
+                        timeout_ms,
+                        cancel_token,
+                        notice,
+                        quiet_ms,
+                    )
+                    .await;
+                });
+
+                return Ok(vec![Content::text(format!(
+                    "{}",
+                    json!({
+                        "background": true,
+                        "pty": true,
+                        "task_id": task_id,
+                        "message": "Command started under a PTY. Read the screen with task_output; answer prompts with task_input."
+                    })
+                ))]);
+            }
 
             let cancel_token = CancellationToken::new();
             let task_id = match registry.register(
@@ -388,20 +489,30 @@ impl Tool for LocalShellTool {
             done: false,
         };
 
-        // Stream stdout/stderr line-by-line via reader tasks, so the caller sees
-        // live progress instead of a frozen screen for the whole duration. Lines
-        // are tagged (stderr vs stdout) and reassembled below.
-        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String)>();
+        // Stream stdout/stderr via reader tasks, so the caller sees live
+        // progress instead of a frozen screen for the whole duration. Chunks
+        // are tagged (stderr vs stdout) and carry a `complete` flag: complete
+        // lines are re-joined with '\n' exactly like the line-granular path,
+        // flushed partials concatenate bare — an interactive prompt almost
+        // never carries a trailing newline and must reach the matcher early.
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<(bool, String, bool)>();
 
         if let Some(stdout) = stdout {
-            tokio::spawn(forward_lines(stdout, false, line_tx.clone()));
+            tokio::spawn(forward_chunks(stdout, false, line_tx.clone()));
         }
         if let Some(stderr) = stderr {
-            tokio::spawn(forward_lines(stderr, true, line_tx));
+            tokio::spawn(forward_chunks(stderr, true, line_tx));
         }
 
         let mut stdout_buf = String::new();
         let mut stderr_buf = String::new();
+        // Prompt watcher state: armed when the ANSI-stripped output tail
+        // matches an interactive prompt, re-evaluated on every new chunk; the
+        // early exit fires only after the output has stayed quiet for
+        // `prompt_quiet_ms` — the dual condition that keeps a run which merely
+        // prints prompt-like text from being killed.
+        let mut prompt_class: Option<crate::interaction::PromptClass> = None;
+        let mut prompt_deadline: Option<tokio::time::Instant> = None;
         // timeout_ms == 0 → no fuse: disable the timeout branch and push the
         // deadline far out (from_millis(0) would fire instantly).
         let unlimited = timeout_ms == 0;
@@ -418,23 +529,60 @@ impl Tool for LocalShellTool {
         // the loop for the exit code.
         loop {
             tokio::select! {
-                line = line_rx.recv() => {
-                    match line {
-                        Some((is_stderr, line)) => {
+                chunk = line_rx.recv() => {
+                    match chunk {
+                        Some((is_stderr, text, complete)) => {
                             // Live feedback; the final summary is assembled below.
-                            ctx.emit_progress(&line);
-                            if is_stderr {
-                                stderr_buf.push_str(&line);
-                                stderr_buf.push('\n');
-                            } else {
-                                stdout_buf.push_str(&line);
-                                stdout_buf.push('\n');
+                            ctx.emit_progress(&text);
+                            let buf = if is_stderr { &mut stderr_buf } else { &mut stdout_buf };
+                            buf.push_str(&text);
+                            if complete {
+                                buf.push('\n');
                             }
+                            // Re-evaluate the prompt watcher on every chunk: a
+                            // new hit re-arms the quiet window, a tail that no
+                            // longer matches disarms it.
+                            let tail = crate::interaction::output_tail(
+                                &stdout_buf,
+                                &stderr_buf,
+                                crate::interaction::TAIL_CHARS,
+                            );
+                            let hit = crate::interaction::match_prompt(
+                                &crate::interaction::strip_ansi(&tail),
+                            );
+                            prompt_deadline = hit.map(|_| {
+                                tokio::time::Instant::now()
+                                    + Duration::from_millis(self.prompt_quiet_ms)
+                            });
+                            prompt_class = hit;
                         }
                         // Both reader tasks finished → all output drained and the
                         // process exited. Reap the exit code after the loop.
                         None => break,
                     }
+                }
+                _ = tokio::time::sleep_until(prompt_deadline.unwrap_or_else(||
+                        tokio::time::Instant::now() + Duration::from_secs(3600)
+                    )), if prompt_deadline.is_some() => {
+                    // Quiet window elapsed with the prompt still on the tail
+                    // (any new chunk would have re-armed or cleared it).
+                    kill_process_group(pid);
+                    let class = prompt_class.expect("armed deadline implies a class");
+                    let tail = crate::interaction::output_tail(
+                        &stdout_buf,
+                        &stderr_buf,
+                        crate::interaction::TAIL_CHARS,
+                    );
+                    let block = crate::interaction::format_waiting_block(
+                        &class,
+                        &crate::interaction::strip_ansi(&tail),
+                    );
+                    tracing::warn!(
+                        command = %command,
+                        class = class.kind.as_str(),
+                        "execute_command: tail matches an interactive prompt and output went quiet; killed process group"
+                    );
+                    return Ok(vec![Content::text(block)]);
                 }
                 _ = &mut sleep, if !unlimited => {
                     kill_process_group(pid);
@@ -446,6 +594,23 @@ impl Tool for LocalShellTool {
                     if is_sleep_poll(&command) {
                         msg.push('\n');
                         msg.push_str(SLEEP_POLL_HINT);
+                    }
+                    // Tail annotation: the fuse fired but the tail matches an
+                    // interactive prompt — say so instead of a bare timeout.
+                    // No match → the message stays byte-identical.
+                    let tail = crate::interaction::output_tail(
+                        &stdout_buf,
+                        &stderr_buf,
+                        crate::interaction::TAIL_CHARS,
+                    );
+                    if let Some(class) =
+                        crate::interaction::match_prompt(&crate::interaction::strip_ansi(&tail))
+                    {
+                        msg.push('\n');
+                        msg.push_str(&crate::interaction::format_waiting_block(
+                            &class,
+                            &crate::interaction::strip_ansi(&tail),
+                        ));
                     }
                     return Ok(vec![Content::text(msg)]);
                 }
@@ -528,6 +693,66 @@ async fn forward_lines<R: tokio::io::AsyncRead + Unpin>(
                 }
             }
             Err(e) => {
+                tracing::warn!(error = %e, is_stderr, "capture: pipe read failed, closing stream");
+                break;
+            }
+        }
+    }
+}
+
+/// How long a partial (newline-free) line may sit before it is flushed
+/// downstream anyway. Interactive prompts ("Password: ", "[Y/n]") almost
+/// never carry a trailing newline, and a pure `read_until(b'\n')` would hold
+/// them back until EOF — so prompt detection would never see them.
+const PARTIAL_FLUSH_MS: u64 = 150;
+
+/// Stream a child pipe's chunks into `tx`, tagged `is_stderr`, until EOF.
+/// The third field is `complete_line`: the receiver joins complete lines with
+/// '\n' exactly like [`forward_lines`], and concatenates flushed partials bare
+/// (a flushed partial and its later remainder are one logical line).
+///
+/// Cancellation-safe: `read_until` leaves whatever it consumed in `buf`, so a
+/// flush-on-timeout drops no bytes. Decoding is lossy for the same reason as
+/// [`forward_lines`] (a strict decoder must never read as EOF).
+async fn forward_chunks<R: tokio::io::AsyncRead + Unpin>(
+    reader: R,
+    is_stderr: bool,
+    tx: tokio::sync::mpsc::UnboundedSender<(bool, String, bool)>,
+) {
+    let mut reader = tokio::io::BufReader::new(reader);
+    let mut buf: Vec<u8> = Vec::new();
+    loop {
+        buf.clear();
+        let read = tokio::time::timeout(
+            Duration::from_millis(PARTIAL_FLUSH_MS),
+            reader.read_until(b'\n', &mut buf),
+        );
+        match read.await {
+            Err(_elapsed) => {
+                // No newline yet — flush what has arrived so the prompt
+                // watcher can see an unterminated prompt line.
+                if buf.is_empty() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                if tx.send((is_stderr, text, false)).is_err() {
+                    break; // receiver gone: task finished/cancelled
+                }
+            }
+            Ok(Ok(0)) => break, // EOF — the child closed its end of the pipe.
+            Ok(Ok(_)) => {
+                if buf.ends_with(b"\n") {
+                    buf.pop();
+                    if buf.ends_with(b"\r") {
+                        buf.pop();
+                    }
+                }
+                let text = String::from_utf8_lossy(&buf).into_owned();
+                if tx.send((is_stderr, text, true)).is_err() {
+                    break;
+                }
+            }
+            Ok(Err(e)) => {
                 tracing::warn!(error = %e, is_stderr, "capture: pipe read failed, closing stream");
                 break;
             }
@@ -726,3 +951,7 @@ mod tests;
 #[cfg(test)]
 #[path = "local_shell_proptests.rs"]
 mod proptests;
+
+#[cfg(test)]
+#[path = "local_shell_prompt_tests.rs"]
+mod prompt_tests;
