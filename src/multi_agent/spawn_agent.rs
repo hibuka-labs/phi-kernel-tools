@@ -63,6 +63,11 @@ nothing but `task` (a standard role prompt and report format are\n\
 added automatically). Keep `task` SHORT — 3-5 sentences covering:\n\
 the goal, the full paths of anything to analyze, the scope, and\n\
 what the report should focus on.\n\
+Brief it like the peer it is: say what you already ruled out so it\n\
+does not go and rule it out again, and point it at the files and\n\
+docs worth reading instead of retyping what you already read.\n\
+Handing over your own hypothesis tends to get that hypothesis\n\
+confirmed back — say what you suspect and what would falsify it.\n\
 Do NOT write a long detailed brief — extra prose only inflates this\n\
 tool call, which is its main truncation failure mode.\n\
 Give it a short unique name (task_name).\n\
@@ -357,6 +362,26 @@ mod spawn_prompt_guard_tests {
             CHILD_SYSTEM_PROMPT.contains("If the task does not bound the scope"),
             "report format must carry the scope fallback — short tasks \
              routinely omit explicit scope bounds"
+        );
+    }
+
+    /// Value: protects=the brief the child gets is a brief a peer could act
+    /// on, not a topic; fails_when=length is capped but quality is not, and
+    /// the child re-derives what the parent already knew.
+    /// why_new=the description capped `task` at 3-5 sentences and said nothing
+    /// about what those sentences must carry.
+    /// seam=none; no_claim=brief quality at runtime.
+    #[test]
+    fn description_says_how_to_write_the_brief() {
+        assert!(
+            DESCRIPTION.contains("ruled out"),
+            "a brief must carry what the parent already ruled out, or the \
+             child re-investigates it: {DESCRIPTION}"
+        );
+        assert!(
+            DESCRIPTION.contains("hypothesis"),
+            "handing over a hypothesis invites it being confirmed back — the \
+             brief must say so: {DESCRIPTION}"
         );
     }
 
