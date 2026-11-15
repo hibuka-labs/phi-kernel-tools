@@ -910,13 +910,19 @@ pub(crate) fn kill_process_group(pgid: Option<u32>) {
     }
 }
 
-/// Non-unix fallback: kill only the direct child (no process-group support).
+/// Non-unix (Windows) fallback: `taskkill /T` kills the child *and every
+/// descendant*. A bare `kill -9 <pid>` reaps only the direct child — the
+/// shell wrapper dies, but the real work (cargo → rustc, cp, …) keeps
+/// running: it keeps burning CPU, keeps writing the workspace, and keeps
+/// holding the console the TUI shares, so a cancelled command looks
+/// "terminated" to the agent while the machine stays busy and the terminal
+/// stops answering.
 #[cfg(not(unix))]
 pub(crate) fn kill_process_group(pid: Option<u32>) {
     let Some(pid) = pid else { return };
-    let _ = std::process::Command::new("kill")
-        .arg("-9")
-        .arg(pid.to_string())
+    let pid = pid.to_string();
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
