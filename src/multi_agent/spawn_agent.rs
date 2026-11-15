@@ -58,6 +58,14 @@ describes, re-verify your location and paths before drawing conclusions.";
 /// automatic role prompt + report format instead.
 const DESCRIPTION: &str = "\
 Spawn an independent sub-agent to handle a task.\n\
+A sub-agent costs more than it looks: it knows only what `task` says, you see\n\
+only what its report says, both handoffs drop detail, and its mistakes come\n\
+back in the same confident register as its findings. Do the work yourself\n\
+when it is a handful of tool calls or a lookup whose target you already know\n\
+— a check you could run inline is not worth an agent. Reach for this when\n\
+the parts are independent and can run at once, or when answering would mean\n\
+reading across many files and you want the conclusion, not the file dumps.\n\
+When in doubt, don't spawn.\n\
 Sub-agents start with NO context of this conversation and see\n\
 nothing but `task` (a standard role prompt and report format are\n\
 added automatically). Keep `task` SHORT — 3-5 sentences covering:\n\
@@ -76,6 +84,7 @@ Request \"write\" only when the task must edit files or run\n\
 commands; use a preset name (researcher/coder/reviewer/tester)\n\
 for its standard persona. In ask mode every sub-agent write is\n\
 confirmed by the user (the popup names the sub-agent).\n\
+Its report is not shown to the user — relay what matters.\n\
 Omit `model` unless the user explicitly asked for a different one.";
 
 /// Legal values for the `tools` parameter (schema enum constraint; an unknown
@@ -362,6 +371,28 @@ mod spawn_prompt_guard_tests {
             CHILD_SYSTEM_PROMPT.contains("If the task does not bound the scope"),
             "report format must carry the scope fallback — short tasks \
              routinely omit explicit scope bounds"
+        );
+    }
+
+    /// Value: protects=the decision to delegate, not just how to delegate —
+    /// a tool that teaches briefing quality and says nothing about cost
+    /// invites one where an inline check would do.
+    /// why_new=the description capped the brief and taught its shape, but
+    /// never said when the tool is the wrong one.
+    /// seam=none; no_claim=that the model obeys it.
+    #[test]
+    fn description_says_when_not_to_spawn() {
+        assert!(
+            DESCRIPTION.contains("When in doubt"),
+            "a delegation tool must carry its own brake: {DESCRIPTION}"
+        );
+        assert!(
+            DESCRIPTION.contains("costs more than it looks"),
+            "and name the cost — the caller cannot see what it paid: {DESCRIPTION}"
+        );
+        assert!(
+            DESCRIPTION.contains("inline"),
+            "a check you could run yourself is not worth a sub-agent: {DESCRIPTION}"
         );
     }
 
