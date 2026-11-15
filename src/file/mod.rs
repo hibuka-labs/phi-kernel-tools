@@ -253,4 +253,41 @@ mod tests {
         // Lexically inside the root, but canonicalizes outside via symlink.
         assert!(resolve_path(&root, "link/secret.md", true).is_err());
     }
+
+    /// Value: protects=the tool-choice guidance every file tool's description
+    /// carries — four near-identical file tools that say only what they do leave
+    /// the model picking by guesswork, and that guesswork is measured (a 67x
+    /// rise in reasoning bought 18% more tool calls; see phimint's
+    /// notes/tool-face-design.md §1.1). fails_when=a description is cut back to
+    /// a one-line "what it does", or loses the markers that tell the model when
+    /// to reach for a different tool. why_new=the descriptions were rewritten
+    /// to carry routing; this is what stops the next trim undoing it.
+    /// seam=description text; no_claim=that longer is always better — only that
+    /// a file tool must say when NOT to use it.
+    #[test]
+    fn file_tool_descriptions_route_and_do_not_shrink() {
+        use agent_base::Tool;
+
+        let root = std::path::PathBuf::from("/tmp");
+        let tools: Vec<Box<dyn Tool>> = vec![
+            Box::new(ReadFileTool::new(root.clone())),
+            Box::new(EditFileTool::new(root.clone())),
+            Box::new(WriteFileTool::new(root.clone())),
+            Box::new(ListFilesTool::new(root.clone())),
+        ];
+        for tool in tools {
+            let d = tool.description();
+            assert!(
+                d.chars().count() >= 600,
+                "{}: description shrank back to a one-liner ({} chars)",
+                tool.name(),
+                d.chars().count()
+            );
+            assert!(
+                d.contains("Do NOT") || d.contains("Do not") || d.contains("only when"),
+                "{}: must say when NOT to use it, or the model picks by guesswork: {d}",
+                tool.name()
+            );
+        }
+    }
 }

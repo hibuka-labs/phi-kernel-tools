@@ -464,14 +464,12 @@ impl Tool for HistorySearchContentsTool {
 
 // ── Registration helper ─────────────────────────────────────────────────────
 
-/// Create all 4 history tools from a shared store.
+/// The single history tool from a shared store.
+///
+/// Four verbs, one name: `history(op=…)` dispatches to the four tools in this
+/// module, which stay as the formatting layer. See `history_tool`.
 pub fn create_history_tools(store: Arc<HistoryStore>) -> Vec<Box<dyn Tool>> {
-    vec![
-        Box::new(HistoryListWindowsTool::new(Arc::clone(&store))),
-        Box::new(HistoryListItemsTool::new(Arc::clone(&store))),
-        Box::new(HistoryReadItemTool::new(Arc::clone(&store))),
-        Box::new(HistorySearchContentsTool::new(store)),
-    ]
+    vec![Box::new(super::history_tool::HistoryTool::new(store))]
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -661,12 +659,18 @@ mod tests {
         assert!(text(&out).contains("No matches"));
     }
 
+    /// Value: protects=the one-name contract — four verbs over one structured
+    /// store is one question asked four ways, and four names cost the model a
+    /// choice every turn for no gain. fails_when=tools creep back without a
+    /// store reason. why_new=the set was collapsed. seam=create_history_tools;
+    /// no_claim=that one name is optimal, only that each must earn its place.
     #[test]
-    fn create_history_tools_returns_four() {
+    fn create_history_tools_returns_one_tool_four_ops() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(HistoryStore::new(tmp.path(), "test"));
         let tools = create_history_tools(store);
-        assert_eq!(tools.len(), 4);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(names, vec!["history"]);
     }
 
     /// LLM tool-name wire contract: every provider rejects a `tools[].name`

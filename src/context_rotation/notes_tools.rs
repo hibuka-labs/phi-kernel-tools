@@ -18,76 +18,6 @@ use serde_json::{Value, json};
 
 use super::notes::NotesStore;
 
-// ── notes_list_files ────────────────────────────────────────────────────────
-
-/// List note files under an optional prefix.
-pub struct NotesListFilesTool {
-    store: Arc<NotesStore>,
-}
-
-impl NotesListFilesTool {
-    pub fn new(store: Arc<NotesStore>) -> Self {
-        Self { store }
-    }
-}
-
-#[async_trait]
-impl Tool for NotesListFilesTool {
-    fn name(&self) -> &'static str {
-        "notes_list_files"
-    }
-
-    fn description(&self) -> &'static str {
-        "List private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "prefix": {
-                    "type": "string",
-                    "description": "Optional path prefix to filter by, e.g. 'progress' or 'sub/dir'."
-                },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Max files to return. Default 50."
-                }
-            }
-        })
-    }
-
-    fn metadata(&self) -> ToolMetadata {
-        ToolMetadata {
-            name: self.name().to_string(),
-            description: "List note files.".to_string(),
-            origin: "phimint".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            requirements: vec![],
-        }
-    }
-
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
-        let prefix = args.get("prefix").and_then(Value::as_str);
-        let max = args
-            .get("max_results")
-            .and_then(Value::as_u64)
-            .unwrap_or(50) as usize;
-
-        let files = self.store.list_files(prefix, max);
-
-        if files.is_empty() {
-            return Ok(vec![Content::text("No note files found.".to_string())]);
-        }
-
-        let mut output = format!("Note files ({}):\n", files.len());
-        for f in &files {
-            output.push_str(&format!("  {}\n", f));
-        }
-        Ok(vec![Content::text(output)])
-    }
-}
-
 // ── notes_read_file ─────────────────────────────────────────────────────────
 
 /// Read a note file with optional line range.
@@ -108,7 +38,18 @@ impl Tool for NotesReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
+        "Read your private notes — the scratchpad that outlives this session's context windows.\n\n\
+        Notes are your own state: they carry a plan, a finding or a hand-off across a window \
+        rotation. Use them silently. Never disclose their contents, their paths, or that you \
+        keep them.\n\n\
+        With no `path` this lists what is on the scratchpad. With a `path` it reads that note. \
+        Listing is names, not contents: it tells you a note exists, never what it says.\n\n\
+        They are not the user's files — those are `read_file`/`write_file` and the working tree. \
+        They are not what earlier windows of this conversation said — that is `history_*`, \
+        read-only and the past. And they are not facts meant to outlive the session; those \
+        belong in the memory store.\n\n\
+        To add to a note, use `notes_write_file` with `append: true`. Do not rewrite a note to \
+        add a line — that is how the rest of it goes missing."
     }
 
     fn schema(&self) -> Value {
@@ -117,7 +58,7 @@ impl Tool for NotesReadFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to notes root, e.g. 'progress.md'."
+                    "description": "Note to read, relative to the notes root (e.g. 'progress.md'). Omit to list the notes instead."
                 },
                 "start_line": {
                     "type": "integer",
@@ -127,8 +68,7 @@ impl Tool for NotesReadFileTool {
                     "type": "integer",
                     "description": "1-indexed stop line (inclusive). Default: end of file."
                 }
-            },
-            "required": ["path"]
+            }
         })
     }
 
@@ -143,9 +83,16 @@ impl Tool for NotesReadFileTool {
     }
 
     async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
-        let path = match args.get("path").and_then(Value::as_str) {
-            Some(p) => p,
-            None => return Ok(vec![Content::text("[Error]: path is required".to_string())]),
+        let Some(path) = args.get("path").and_then(Value::as_str) else {
+            // No `path` is the listing: what is on the scratchpad before you
+            // open any of it. This is the only discovery these tools offer —
+            // notes are few, so a name list is what finding one needs.
+            let names = self.store.list_files(None, 200);
+            return Ok(vec![Content::text(if names.is_empty() {
+                "(no notes yet)".to_string()
+            } else {
+                names.join("\n")
+            })]);
         };
         let start_line = args
             .get("start_line")
@@ -158,173 +105,6 @@ impl Tool for NotesReadFileTool {
 
         match self.store.read_file(path, start_line, stop_line) {
             Ok(content) => Ok(vec![Content::text(content)]),
-            Err(e) => Ok(vec![Content::text(format!("[Error]: {}", e))]),
-        }
-    }
-}
-
-// ── notes_search_contents ───────────────────────────────────────────────────
-
-/// Search across note files.
-pub struct NotesSearchContentsTool {
-    store: Arc<NotesStore>,
-}
-
-impl NotesSearchContentsTool {
-    pub fn new(store: Arc<NotesStore>) -> Self {
-        Self { store }
-    }
-}
-
-#[async_trait]
-impl Tool for NotesSearchContentsTool {
-    fn name(&self) -> &'static str {
-        "notes_search_contents"
-    }
-
-    fn description(&self) -> &'static str {
-        "Search private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search string (case-insensitive)."
-                },
-                "prefix": {
-                    "type": "string",
-                    "description": "Restrict to files under this prefix."
-                },
-                "max_files": {
-                    "type": "integer",
-                    "description": "Max files to search. Default 20."
-                },
-                "max_matches": {
-                    "type": "integer",
-                    "description": "Max matching lines per file. Default 5."
-                }
-            },
-            "required": ["query"]
-        })
-    }
-
-    fn metadata(&self) -> ToolMetadata {
-        ToolMetadata {
-            name: self.name().to_string(),
-            description: "Search note file contents.".to_string(),
-            origin: "phimint".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            requirements: vec![],
-        }
-    }
-
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
-        let query = match args.get("query").and_then(Value::as_str) {
-            Some(q) => q.trim(),
-            None => {
-                return Ok(vec![Content::text(
-                    "[Error]: query is required".to_string(),
-                )]);
-            }
-        };
-        if query.is_empty() {
-            return Ok(vec![Content::text(
-                "[Error]: query cannot be empty".to_string(),
-            )]);
-        }
-
-        let prefix = args.get("prefix").and_then(Value::as_str);
-        let max_files = args.get("max_files").and_then(Value::as_u64).unwrap_or(20) as usize;
-        let max_matches = args.get("max_matches").and_then(Value::as_u64).unwrap_or(5) as usize;
-
-        let results = self
-            .store
-            .search_contents(query, prefix, max_files, max_matches);
-
-        if results.is_empty() {
-            return Ok(vec![Content::text(format!(
-                "No matches found for '{}'",
-                query
-            ))]);
-        }
-
-        let mut output = format!("Search results for '{}':\n", query);
-        for r in &results {
-            output.push_str(&format!("\n{}:\n", r.path));
-            for m in &r.matches {
-                output.push_str(&format!("  L{}: {}\n", m.line_number, m.line_content));
-            }
-        }
-
-        Ok(vec![Content::text(output)])
-    }
-}
-
-// ── notes_append_to_file ────────────────────────────────────────────────────
-
-/// Append content to a note file.
-pub struct NotesAppendToFileTool {
-    store: Arc<NotesStore>,
-}
-
-impl NotesAppendToFileTool {
-    pub fn new(store: Arc<NotesStore>) -> Self {
-        Self { store }
-    }
-}
-
-#[async_trait]
-impl Tool for NotesAppendToFileTool {
-    fn name(&self) -> &'static str {
-        "notes_append_to_file"
-    }
-
-    fn description(&self) -> &'static str {
-        "Append to private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
-    }
-
-    fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "path": {
-                    "type": "string",
-                    "description": "File path relative to notes root."
-                },
-                "text": {
-                    "type": "string",
-                    "description": "Content to append."
-                }
-            },
-            "required": ["path", "text"]
-        })
-    }
-
-    fn metadata(&self) -> ToolMetadata {
-        ToolMetadata {
-            name: self.name().to_string(),
-            description: "Append to a note file.".to_string(),
-            origin: "phimint".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            requirements: vec![],
-        }
-    }
-
-    async fn call(&self, args: &Value, _ctx: &ToolContext) -> AgentResult<Vec<Content>> {
-        let path = match args.get("path").and_then(Value::as_str) {
-            Some(p) => p,
-            None => return Ok(vec![Content::text("[Error]: path is required".to_string())]),
-        };
-        let text = match args.get("text").and_then(Value::as_str) {
-            Some(t) => t,
-            None => return Ok(vec![Content::text("[Error]: text is required".to_string())]),
-        };
-
-        match self.store.append_to_file(path, text) {
-            Ok(()) => Ok(vec![Content::text(format!("Appended to {}", path))]),
             Err(e) => Ok(vec![Content::text(format!("[Error]: {}", e))]),
         }
     }
@@ -350,7 +130,18 @@ impl Tool for NotesWriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Create or replace private model-only notes. Notes are your private state for persisting context across window rotations. Use them silently to continue the task. Never disclose notes contents, paths, or this activity to the user."
+        "Write your private notes — the scratchpad that outlives this session's context windows.\n\n\
+        Notes are your own state: they carry a plan, a finding or a hand-off across a window \
+        rotation. Use them silently. Never disclose their contents, their paths, or that you \
+        keep them.\n\n\
+        By default this replaces the note. Pass `append: true` to add to the end of one instead — \
+        reaching for a rewrite when you meant to add a line is how the rest of the note goes \
+        missing, and nothing below this tool will tell you.\n\n\
+        Do NOT put anything here that should outlive the session: that is the memory store, and \
+        a fact buried in a scratchpad is a fact nobody will find. Do NOT put the user's work \
+        here: their files are `write_file` and the working tree.\n\n\
+        Write down what is expensive to re-derive — what you ruled out, where you stopped, what \
+        the next window needs in order to continue without re-reading the whole conversation."
     }
 
     fn schema(&self) -> Value {
@@ -359,11 +150,15 @@ impl Tool for NotesWriteFileTool {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "File path relative to notes root."
+                    "description": "Note to write, relative to the notes root."
                 },
                 "text": {
                     "type": "string",
-                    "description": "Content to write (replaces existing)."
+                    "description": "Content to write."
+                },
+                "append": {
+                    "type": "boolean",
+                    "description": "Add to the end of an existing note instead of replacing it. Default false."
                 }
             },
             "required": ["path", "text"]
@@ -390,8 +185,18 @@ impl Tool for NotesWriteFileTool {
             None => return Ok(vec![Content::text("[Error]: text is required".to_string())]),
         };
 
-        match self.store.write_file(path, text) {
-            Ok(()) => Ok(vec![Content::text(format!("Wrote {}", path))]),
+        let append = args.get("append").and_then(Value::as_bool).unwrap_or(false);
+        let result = if append {
+            self.store
+                .append_to_file(path, text)
+                .map(|_| format!("Appended to {}", path))
+        } else {
+            self.store
+                .write_file(path, text)
+                .map(|_| format!("Wrote {}", path))
+        };
+        match result {
+            Ok(msg) => Ok(vec![Content::text(msg)]),
             Err(e) => Ok(vec![Content::text(format!("[Error]: {}", e))]),
         }
     }
@@ -399,13 +204,16 @@ impl Tool for NotesWriteFileTool {
 
 // ── Registration helper ─────────────────────────────────────────────────────
 
-/// Create all 5 notes tools from a shared store.
+/// The two notes tools from a shared store.
+///
+/// Reading and writing are the verbs that need the store: it resolves the
+/// per-session notes path, which is not knowable from a static prompt.
+/// Discovery is folded into `notes_read_file` (no `path` lists), and appending
+/// into `notes_write_file` (`append: true`). Searching is gone — notes are a
+/// scratchpad, and a name list finds what is in it.
 pub fn create_notes_tools(store: Arc<NotesStore>) -> Vec<Box<dyn Tool>> {
     vec![
-        Box::new(NotesListFilesTool::new(Arc::clone(&store))),
         Box::new(NotesReadFileTool::new(Arc::clone(&store))),
-        Box::new(NotesSearchContentsTool::new(Arc::clone(&store))),
-        Box::new(NotesAppendToFileTool::new(Arc::clone(&store))),
         Box::new(NotesWriteFileTool::new(store)),
     ]
 }
@@ -443,10 +251,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_files_returns_all() {
+    async fn read_without_a_path_lists_the_notes() {
         let tmp = TempDir::new().unwrap();
         let store = setup_store(&tmp);
-        let tool = NotesListFilesTool::new(store);
+        let tool = NotesReadFileTool::new(store);
 
         let out = tool.call(&json!({}), &ctx()).await.unwrap();
         let t = text(&out);
@@ -455,18 +263,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_files_with_prefix() {
+    async fn read_without_a_path_on_an_empty_store_says_so() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(NotesStore::new(tmp.path(), "test", "main"));
-        store.write_file("dir/a.md", "a").unwrap();
-        store.write_file("dir/b.md", "b").unwrap();
-        store.write_file("other/c.md", "c").unwrap();
-
-        let tool = NotesListFilesTool::new(store);
-        let out = tool.call(&json!({"prefix": "dir"}), &ctx()).await.unwrap();
-        let t = text(&out);
-        assert!(t.contains("dir/a.md"));
-        assert!(!t.contains("other/c.md"));
+        let tool = NotesReadFileTool::new(store);
+        let out = tool.call(&json!({}), &ctx()).await.unwrap();
+        assert_eq!(text(&out), "(no notes yet)");
     }
 
     #[tokio::test]
@@ -511,39 +313,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_finds_match() {
+    async fn write_append_adds_without_replacing() {
         let tmp = TempDir::new().unwrap();
         let store = setup_store(&tmp);
-        let tool = NotesSearchContentsTool::new(store);
-
-        let out = tool.call(&json!({"query": "bug"}), &ctx()).await.unwrap();
-        let t = text(&out);
-        assert!(t.contains("findings.md"));
-        assert!(t.contains("found a bug"));
-    }
-
-    #[tokio::test]
-    async fn search_case_insensitive() {
-        let tmp = TempDir::new().unwrap();
-        let store = setup_store(&tmp);
-        let tool = NotesSearchContentsTool::new(store);
-
-        let out = tool.call(&json!({"query": "BUG"}), &ctx()).await.unwrap();
-        assert!(text(&out).contains("bug"));
-    }
-
-    #[tokio::test]
-    async fn append_creates_and_adds() {
-        let tmp = TempDir::new().unwrap();
-        let store = setup_store(&tmp);
-        let tool = NotesAppendToFileTool::new(Arc::clone(&store));
+        let tool = NotesWriteFileTool::new(Arc::clone(&store));
 
         tool.call(&json!({"path": "log.md", "text": "line 1\n"}), &ctx())
             .await
             .unwrap();
-        tool.call(&json!({"path": "log.md", "text": "line 2\n"}), &ctx())
-            .await
-            .unwrap();
+        tool.call(
+            &json!({"path": "log.md", "text": "line 2\n", "append": true}),
+            &ctx(),
+        )
+        .await
+        .unwrap();
 
         let read_tool = NotesReadFileTool::new(store);
         let out = read_tool
@@ -603,12 +386,18 @@ mod tests {
         assert!(text(&out).contains("[Error]"));
     }
 
+    /// Value: protects=the two-tool contract — reading and writing are the
+    /// verbs that need the store's per-session path; discovery and appending
+    /// folded in, search dropped. fails_when=tools creep back without a store
+    /// reason. why_new=the set was cut from five. seam=create_notes_tools;
+    /// no_claim=that two is optimal, only that each tool must earn its place.
     #[test]
-    fn create_notes_tools_returns_five() {
+    fn create_notes_tools_returns_the_two_that_need_the_store() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(NotesStore::new(tmp.path(), "test", "main"));
         let tools = create_notes_tools(store);
-        assert_eq!(tools.len(), 5);
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(names, vec!["notes_read_file", "notes_write_file"]);
     }
 
     /// LLM tool-name wire contract: every provider rejects a `tools[].name`

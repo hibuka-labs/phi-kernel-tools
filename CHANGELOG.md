@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-16
+
+### Added
+- **The sub-agent is briefed like a peer.** `spawn_agent` now carries the
+  case *against* delegating — what the parent already knows, what the
+  child would have to rediscover — and briefs the child with the same
+  care. A sub-agent that is handed a task without the reasoning behind it
+  re-derives what the parent already settled.
+
+- **`send_message` says when not to send.** The tool's guidance names the
+  cases where a message adds nothing: the child is still working, the
+  answer is already in the transcript, or the parent is asking itself.
+
+### Fixed
+- **Cancelling a shell kills the whole process tree on Windows.** A
+  cancelled command left its children running — the Windows equivalent of
+  the shell hanging on to a background job.
+
+- **The pty end-to-end test is behind the shell feature.** The test used
+  to run in configurations that do not have a pty, and failed there for
+  reasons that had nothing to do with the code under test.
+
+### Changed
+- **Breaking (dependency):** `agent-base` requirement bumped from 0.14.0
+  to 0.15.0 and `agent-works` from 0.14.0 to 0.15.0, keeping the family on
+  a single version of each crate alongside phi-agent 0.23.0.
+
 ## [0.14.0] - 2026-11-14
 
 ### Added

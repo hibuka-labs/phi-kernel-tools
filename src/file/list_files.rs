@@ -124,7 +124,22 @@ impl Tool for ListFilesTool {
     }
 
     fn description(&self) -> &'static str {
-        "List files and directories in a directory, with per-file sizes. Supports glob pattern filtering (e.g. '*.rs'), optional recursive mode (which respects .gitignore), and a limit on the number of entries returned. The path may be workspace-relative or absolute. Use this to explore project structure, find files by pattern, or understand directory layout."
+        "List what is in a directory — names, entry kinds and per-file sizes.\n\n\
+        Use this to see a directory's layout, to find files matching a name or \
+        a glob, or to check whether something exists before you read it. \
+        Recursive mode descends and honours .gitignore.\n\n\
+        Do NOT use it to find out what a file *says*. A listing is names, not \
+        contents: \"it is here\" is not \"it mentions X\". Content search answers \
+        the second question in one call; picking files out of a listing and \
+        reading them to answer it is the expensive route.\n\n\
+        Do NOT use it to read what you just found — that is `read_file`. Listing \
+        a directory and then opening every entry is how a cheap question turns \
+        into an expensive one.\n\n\
+        Recursive mode honours .gitignore, so a file can exist on disk and be \
+        absent from a recursive listing. That is the intended reading of \"what \
+        is in this project\", not a missing entry. The entry cap truncates too: \
+        a short listing is not proof that nothing else is there.\n\n\
+        The path may be workspace-relative or absolute."
     }
 
     fn schema(&self) -> Value {

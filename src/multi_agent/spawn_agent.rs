@@ -78,7 +78,10 @@ Handing over your own hypothesis tends to get that hypothesis\n\
 confirmed back — say what you suspect and what would falsify it.\n\
 Do NOT write a long detailed brief — extra prose only inflates this\n\
 tool call, which is its main truncation failure mode.\n\
-Give it a short unique name (task_name).\n\
+Give it a short unique name in `task_name` — a label like\n\
+`runbook-rules`, NOT the task itself. The work goes in `task`:\n\
+`task_name` names the agent, `task` is what it does. Mixing them up\n\
+fails the call outright, with nothing done.\n\
 Omit `tools` for read-only research tasks (the default).\n\
 Request \"write\" only when the task must edit files or run\n\
 commands; use a preset name (researcher/coder/reviewer/tester)\n\
@@ -122,7 +125,9 @@ impl ToolsSpec {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SpawnAgentArgs {
-    /// Unique name for this sub-agent (used in the agent path)
+    /// Label for this sub-agent (used in the agent path) — a short handle like
+    /// `runbook-rules`. NOT the task: the work belongs in `task`. This names
+    /// the agent, it does not say what the agent does.
     pub task_name: String,
     /// What you want the sub-agent to do — SHORT, 3-5 sentences: the goal,
     /// the full paths of anything to analyze, the scope, and what the
@@ -441,6 +446,30 @@ mod spawn_prompt_guard_tests {
             !DESCRIPTION.contains("COMPLETE and self-contained"),
             "self-contained-brief guidance is the truncation surface this \
              description was rewritten to remove"
+        );
+    }
+
+    /// Value: protects=the two-field split — `task_name` labels the agent and
+    /// `task` is the work, and the names invite the opposite reading. Session
+    /// 20261115_08a9ccae put the whole brief in `task_name` and the call died
+    /// with "missing field `task`", twice, before it got it right.
+    /// fails_when=the description stops saying which field is which.
+    /// why_new=it only said "give it a short unique name", which reads as "name
+    /// the task". seam=description + schema field doc; no_claim=that the field
+    /// name is a good one — renaming it is the better fix and is still open.
+    #[test]
+    fn description_separates_the_label_from_the_work() {
+        assert!(
+            DESCRIPTION.contains("NOT the task"),
+            "must say what `task_name` is not — that is the error the model made"
+        );
+        assert!(
+            DESCRIPTION.contains("The work goes in `task`"),
+            "and must say where the work goes"
+        );
+        assert!(
+            DESCRIPTION.contains("fails the call outright"),
+            "the cost of mixing them up must be named, or it reads as a hint"
         );
     }
 }

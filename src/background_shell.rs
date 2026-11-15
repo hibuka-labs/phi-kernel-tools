@@ -899,7 +899,17 @@ impl Tool for TaskCancelTool {
     }
 
     fn description(&self) -> &'static str {
-        "Terminate a running background task by task_id."
+        "Terminate a running background task by its `bg_*` id.\n\n\
+         Use it when a job is wrong, wedged, or hogging something you now need: a server on a \
+         port you want, a test run that is going to fail anyway, a watcher you started before \
+         the plan changed.\n\n\
+         Do NOT cancel to find out whether it finished — `task_output` says that, and a kill \
+         ordered on a guess is a job you cannot get back. Do NOT cancel to undo what it did: \
+         this stops the process and rolls nothing back. A build that already wrote files has \
+         written them.\n\n\
+         Read what is left before you cancel when you can. Output not yet read dies with the \
+         process, and for a PTY task the scrollback dies too. And a cancel is a decision about \
+         someone's work: when the job is the user's, say what you are about to kill and why."
     }
 
     fn schema(&self) -> Value {
