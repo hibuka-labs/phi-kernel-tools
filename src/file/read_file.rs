@@ -152,27 +152,14 @@ impl Tool for ReadFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read one or more whole files, with line numbers.\n\n\
-         Use this when you know which file or files you want and need their \
-         contents. `paths` reads several in one call and returns one numbered \
-         block per file.\n\n\
-         Do NOT use it to find out which file you want: `list_files` finds by \
-         name, and a content search finds by text. Opening five files to \
-         discover the right one is the slow and expensive way to answer a \
-         question a single search answers.\n\n\
-         Do NOT use it to change anything. `edit_file` makes a targeted change \
-         to text you have seen; `write_file` replaces a file whole. Read first \
-         if you need to, but the write is a different tool.\n\n\
-         File contents are the most expensive thing you put in your context, \
-         and this one charges per file: `paths` is one call, not one bill. \
-         Prefer one file you know to five you are guessing at. When you need \
-         the shape of something large rather than all of it, page with \
-         `offset`/`limit` instead of pulling the whole thing.\n\n\
-         A missing path fails outright — there is no \"close enough\" and no \
-         partial read. Binary content is not this tool. Output is capped at the \
-         engine's budget and the cut is marked: a marked read is not the whole \
-         file, so page rather than reading it again.\n\n\
-         Pass exactly one of `path` or `paths`. `offset`/`limit` apply per file."
+        "Reads a file from the local filesystem.\n\n\
+         - `path` is workspace-relative or absolute. `paths: [..]` reads several files in one call.\n\
+         - Reads up to 2000 lines by default; `offset`/`limit` page through a long file.\n\
+         - When you already know which part of the file you need, only read that part. This can be important for larger files.\n\
+         - Results are returned using cat -n format, with line numbers starting at 1.\n\
+         - Reading a directory, a missing file, or an empty file returns an error rather than content.\n\
+         - Do NOT re-read a file you just edited to verify — the edit would have errored if the change failed.\n\
+         - This reads; it does not change anything. `edit_file` makes a targeted change, `write_file` replaces a file whole."
     }
 
     fn schema(&self) -> Value {

@@ -204,15 +204,16 @@ impl Tool for LocalShellTool {
     }
 
     fn description(&self) -> &'static str {
-        "Execute a shell command locally.\n\
-         - Foreground (default): blocks until the command exits, or is killed at timeout_ms (default 120000).\n\
-         - Background (background=true): returns a task_id immediately and keeps running with no timeout by default; its exit sends a system notification. For a server, an exit notification means it died — investigate via task_output(task_id). Read output anytime with task_output; stop with task_cancel.\n\
-         - timeout_ms: kill the process after N ms; 0 = never kill. Background defaults to 0 (indefinite), foreground to 120000. Set it only on background jobs that must finish within a bound (e.g. a long test run).\n\
-         - PTY (pty=true, background only): runs under a terminal, so interactive prompts work. task_output returns `[waiting for input]` when one blocks the task; answer it with task_input. Use for programs that need a TTY (ssh, REPLs, installers, pagers).\n\
-         This runs commands; it does not edit files. `sed -i`, `tee` and redirections write bytes you cannot see and report nothing when they write the wrong ones — a wrong `sed` rewrites something else and still exits 0. Use `edit_file` for a targeted change and `write_file` for a whole one; both fail loudly when they cannot find what you meant. Reading is the same story: `cat`/`head` on one file is `read_file`, with line numbers and a budget.\n\
-         Decide like a person: servers/watchers (vite, mvn spring-boot:run) → background; verify they listen (e.g. lsof -ti:PORT) before reporting success, then leave them alone. Long one-shot jobs (mvn test, npm install) → background with a generous timeout_ms, or foreground when quick. For large expected output, limit lines (grep ... | head -n 30).\n\
-         A zero exit code means the command finished, not that it did what you meant. Read the output, and when the change carries behaviour, run the check that would catch it wrong.\n\
-         NEVER wait by sleeping in a foreground call (`sleep 120; tail log` burns a whole turn and blocks the conversation): start the job with background=true and let its completion notice wake you, then read progress with task_output."
+        "Executes a bash command and returns its output.\n\n\
+         - IMPORTANT: Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\n\
+         - Command output is displayed to you, not reliably to the user.\n\
+         - `timeout_ms` is in milliseconds: default 120000, max 600000 for a foreground command.\n\
+         - `background: true` runs the command detached: it keeps running across turns and re-invokes you when it exits. No `&` needed. You will be notified when it exits — do not poll its output while waiting. Foreground `sleep` is blocked.\n\
+         - `pty: true` (background only) runs under a terminal, so interactive prompts work: task_output returns `[waiting for input]` when one blocks the task, and task_input answers it. Use for programs that need a TTY (ssh, REPLs, installers, pagers).\n\
+         - `cd` carries to the next call only if the command succeeds and ends inside the working directory. Prefer absolute paths. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.\n\
+         - This runs commands; it does not edit files. `sed -i`, `tee` and redirections write bytes you cannot see and report nothing when they write the wrong ones — use `edit_file` for a targeted change and `write_file` for a whole one.\n\
+         - A zero exit code means the command finished, not that it did what you meant.\n\
+         - NEVER wait by sleeping in a foreground call: start the job with `background: true` and let its completion notice wake you, then read progress with task_output."
     }
 
     fn schema(&self) -> Value {

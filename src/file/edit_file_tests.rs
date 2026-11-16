@@ -471,7 +471,7 @@ async fn test_edit_file_absolute_path_outside_workspace() {
 async fn test_name_and_definition() {
     let tool = EditFileTool::new(PathBuf::from("/tmp"));
     assert_eq!(tool.name(), "edit_file");
-    assert!(tool.description().contains("text replacements"));
+    assert!(tool.description().contains("exact string replacement"));
     let schema = tool.schema();
     assert_eq!(schema["type"], "object");
     let required = schema["required"].as_array().unwrap();

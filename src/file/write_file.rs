@@ -42,25 +42,11 @@ impl Tool for WriteFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Write a file whole — new, or replacing its entire contents.\n\n\
-        Use this to create a file, or when the file you are producing is \
-        genuinely all new. Parent directories are created for you. Paths may be \
-        workspace-relative or absolute.\n\n\
-        Do NOT use it to change part of a file — that is `edit_file`. Rewriting \
-        a file to move one line is how the other 199 go missing, and no tool \
-        below this one will tell you. Read the file first if you have not; if \
-        what you would write is not what is already there plus your change, \
-        stop and look at it.\n\n\
-        Do NOT append through `execute_command` with `>>` or `tee`: that grows \
-        a file without ever showing you its shape, and there is no match report \
-        to fail on.\n\n\
-        An existing file is never overwritten silently — `overwrite: true` is \
-        the explicit claim that you mean to lose what is there. Content above \
-        1 MB is refused outright rather than truncated, so a write that fails \
-        on size has written nothing.\n\n\
-        Writing bytes does not prove the content is right: after writing \
-        something that carries behaviour, run the check that would catch it \
-        being wrong."
+        "Writes a file to the local filesystem, overwriting if one exists.\n\n\
+         When to use: creating a new file, or fully replacing one you have already Read. Overwriting an existing file you have not Read will fail. For partial changes, use `edit_file` instead.\n\n\
+         - Creates parent directories automatically. Content above 1 MB is refused outright rather than truncated.\n\
+         - Do NOT append through `execute_command` with `>>` or `tee`: that grows a file without ever showing you its shape.\n\
+         - Writing bytes does not prove the content is right: after writing something that carries behaviour, run the check that would catch it being wrong."
     }
 
     fn schema(&self) -> Value {

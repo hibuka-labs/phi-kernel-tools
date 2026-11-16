@@ -62,24 +62,13 @@ impl Tool for EditFileTool {
     }
 
     fn description(&self) -> &'static str {
-        "Make precise text replacements in an existing file.\n\n\
-        Use this to change part of a file whose text you have seen: each edit is \
-        `old_text` (text to find) and `new_text` (the replacement), and each \
-        `old_text` must appear exactly once.\n\n\
-        Do NOT use it to create a file or replace one whole — that is \
-        `write_file`. Rewriting 200 lines to change one of them is how the other \
-        199 go missing.\n\n\
-        Do NOT do this through `execute_command` with `sed -i`, `tee`, or a \
-        redirection. Those work on bytes you cannot see and report nothing; a \
-        wrong `sed` silently rewrites something else. This tool fails loudly \
-        instead.\n\n\
-        A replacement is not a script: all edits are applied to the file as it \
-        was, not one after another, so two edits that need each other's output \
-        are not two edits. And an `old_text` that appears twice is an error, not \
-        a best guess — quote more surrounding text to make it unique rather than \
-        trimming it until something matches.\n\n\
-        Changing bytes does not prove the change is right: after an edit that \
-        carries behaviour, run the check that would catch it being wrong."
+        "Performs exact string replacement in a file.\n\n\
+         - You must Read the file in this conversation before editing, or the call will fail.\n\
+         - `old_text` must match the file exactly, including indentation, and be unique — the edit fails otherwise.\n\
+         - Multiple edits are applied to the original file (not incrementally).\n\
+         - Do NOT use it to create a file or replace one whole — that is `write_file`.\n\
+         - Do NOT do this through `execute_command` with `sed -i`, `tee`, or a redirection: those work on bytes you cannot see and report nothing when they write the wrong ones. This tool fails loudly instead.\n\
+         - Changing bytes does not prove the change is right: after an edit that carries behaviour, run the check that would catch it being wrong."
     }
 
     fn schema(&self) -> Value {
