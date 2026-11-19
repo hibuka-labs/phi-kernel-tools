@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/phi-kernel-tools.svg)](https://crates.io/crates/phi-kernel-tools)
 [![Documentation](https://docs.rs/phi-kernel-tools/badge.svg)](https://docs.rs/phi-kernel-tools)
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![codecov](https://codecov.io/gh/hibuka-labs/phi-kernel-tools/branch/master/graph/badge.svg)](https://codecov.io/gh/hibuka-labs/phi-kernel-tools)
 
 **Kernel tools for phi-agent — LLM-callable Tool implementations injected via factory pattern.**
@@ -104,4 +104,4 @@ The `spawn_agent` tool supports these parameters:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT OR Apache-2.0 — see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
