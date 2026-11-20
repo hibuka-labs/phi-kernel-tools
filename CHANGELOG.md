@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-20
+
+### Changed
+- **Breaking (dependency):** `agent-base` requirement bumped from 0.15.0 to
+  0.16.0 and `agent-works` from 0.15.0 to 0.16.0, keeping the framework on a
+  single version of each crate. No functional changes in phi-kernel-tools
+  itself.
+
+### License
+- **Dual-licensed as MIT OR Apache-2.0.**
+
 ## [0.15.0] - 2026-11-16
 
 ### Added
