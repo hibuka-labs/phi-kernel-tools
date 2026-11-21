@@ -273,7 +273,7 @@ impl Tool for ListFilesTool {
         let file_count = entries.len() - dir_count;
 
         let header = format!(
-            "Listing '{}' ({} files, {} dirs):\n",
+            "Listing '{}' ({} files, {} dirs; dirs are marked '(directory)'):\n",
             path_str, file_count, dir_count
         );
         let marker = "...(truncated)\n";
@@ -282,7 +282,6 @@ impl Tool for ListFilesTool {
         let mut truncated = false;
 
         for entry in &entries {
-            let type_marker = if entry.is_dir { "/" } else { "" };
             let size_str = if entry.is_dir {
                 String::new()
             } else {
@@ -293,7 +292,12 @@ impl Tool for ListFilesTool {
                 .strip_prefix(&dir_path)
                 .unwrap_or(&entry.path)
                 .display();
-            let line = format!("  {}{}{}\n", relative, type_marker, size_str);
+            let (type_marker, kind_str) = if entry.is_dir {
+                ("/", " (directory)")
+            } else {
+                ("", "")
+            };
+            let line = format!("  {}{}{}{}\n", relative, type_marker, kind_str, size_str);
 
             // Self-truncate to the per-call output budget (`ToolContext::max_output_chars`)
             // so the engine's hard reject (§6.5) never fires for a huge listing. Unlike

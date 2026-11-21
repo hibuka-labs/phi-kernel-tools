@@ -82,6 +82,9 @@ Give it a short unique name in `task_name` — a label like\n\
 `runbook-rules`, NOT the task itself. The work goes in `task`:\n\
 `task_name` names the agent, `task` is what it does. Mixing them up\n\
 fails the call outright, with nothing done.\n\
+Spawning does not block you: keep working and check on it later with\n\
+`list_agents` (status, elapsed time, tool calls). A sub-agent runs until\n\
+its report is ready; if one looks stuck, `close_agent` stops it.\n\
 Omit `tools` for read-only research tasks (the default).\n\
 Request \"write\" only when the task must edit files or run\n\
 commands; use a preset name (researcher/coder/reviewer/tester)\n\
@@ -279,7 +282,16 @@ impl TypedTool for SpawnAgentTool {
                             message: msg,
                         })
                     }
-                    Ok(false) | Err(_) => {
+                    other => {
+                        // Ok(false): the mailbox vanished between spawn and
+                        // send (the child task loop already exited). Err: the
+                        // agent path could not be resolved. Surface the real
+                        // reason instead of a bare "delivery failed", which
+                        // used to hide a malformed name behind a generic error.
+                        let reason = match other {
+                            Ok(_) => "agent is no longer registered".to_string(),
+                            Err(e) => e,
+                        };
                         // Best effort: a close failure here means the
                         // runtime is tearing down anyway; the caller cannot
                         // use the agent either way.
@@ -290,8 +302,8 @@ impl TypedTool for SpawnAgentTool {
                         Ok(SpawnAgentOutput {
                             agent_path: String::new(),
                             message: format!(
-                                "Agent spawned but task delivery failed, agent \
-                                 closed. Retry spawn if needed{}",
+                                "Agent spawned but task delivery failed ({reason}), \
+                                 agent closed. Retry spawn if needed{}",
                                 why
                             ),
                         })

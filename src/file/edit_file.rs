@@ -166,8 +166,13 @@ impl Tool for EditFileTool {
         }
 
         if !file_path.is_file() {
+            let hint = if file_path.is_dir() {
+                " (it is a directory — use list_files to list its contents)"
+            } else {
+                ""
+            };
             return Ok(vec![Content::text(format!(
-                "[Error]: Path is not a file: {}",
+                "[Error]: Path is not a file: {}{hint}",
                 path_str
             ))]);
         }
