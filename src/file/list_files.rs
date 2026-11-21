@@ -799,7 +799,9 @@ mod tests {
         // names both the current and suggested next limit.
         assert!(text.contains("5 entries limit reached"), "{text}");
         assert!(text.contains("limit=10"), "{text}");
-        assert!(text.contains("(5 files, 0 dirs)"), "{text}");
+        // Substring without the closing paren: the header carries the
+        // "dirs are marked '(directory)'" hint after the count.
+        assert!(text.contains("5 files, 0 dirs"), "{text}");
     }
 
     #[test]

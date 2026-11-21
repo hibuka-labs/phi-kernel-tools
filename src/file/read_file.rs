@@ -67,10 +67,7 @@ fn read_block(
         } else {
             ""
         };
-        return Err(format!(
-            "[Error]: Path is not a file: {}{hint}",
-            path_str
-        ));
+        return Err(format!("[Error]: Path is not a file: {}{hint}", path_str));
     }
 
     // Read file content

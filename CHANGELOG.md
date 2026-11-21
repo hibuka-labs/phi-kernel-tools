@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-11-22
+
+### Fixed
+- **`list_files` reports its own header correctly.** The test pinned the
+  exact count text including the closing parenthesis, but the header
+  carries an extra hint after it (directory entries are marked
+  `(directory)`), so the assertion failed against a correct implementation.
+  The assertion now matches the count itself.
+
+### Changed
+- **Tests run on every release platform.** CI builds and runs the test
+  suite on Linux, macOS and Windows instead of Linux alone. A new
+  `platform-gate` job rejects hand-rolled `HOME` / `USERPROFILE`
+  environment lookups; home resolution goes through `dirs::home_dir()`.
+
 ## [0.16.0] - 2026-11-20
 
 ### Changed
