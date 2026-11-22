@@ -116,11 +116,62 @@ pub trait TermSession: Send + Sync {
 /// terminal (the child is a session leader, so a process-group kill reaches
 /// its whole tree).
 pub struct LocalPty {
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Mutex<Option<Box<dyn MasterPty + Send>>>,
     child: Mutex<Box<dyn Child + Send + Sync>>,
     screen: Arc<ScreenBuffer>,
     reader_eof: Arc<AtomicBool>,
+}
+
+/// Windows ConPTY hands the application's cursor-position query (`ESC[6n`,
+/// DSR) to the *host* and waits for the reply on the child's stdin. A real
+/// terminal answers it; a raw pipe does not, so the child blocks before it
+/// ever prints — MSYS2 bash asks at startup, so every PTY task on Windows
+/// hung with an empty screen. Answering it here is what keeps a Windows PTY
+/// task alive.
+const DSR_QUERY: &[u8] = b"\x1b[6n";
+
+/// The reply a terminal sends for a cursor-position report: row;column, both
+/// 1-based. The child only needs a well-formed answer to stop waiting.
+const DSR_REPLY: &[u8] = b"\x1b[1;1R";
+
+/// Length of the trailing bytes that could still grow into a DSR query.
+///
+/// The query is `ESC [ 6 n`; a trailing `ESC`, `ESC [` or `ESC [ 6` may be
+/// the start of one, so it is held back until the rest arrives.
+fn partial_dsr_len(buf: &[u8]) -> usize {
+    for len in [1usize, 2, 3] {
+        if buf.len() >= len {
+            let start = buf.len() - len;
+            if DSR_QUERY.starts_with(&buf[start..]) {
+                return len;
+            }
+        }
+    }
+    0
+}
+
+/// Pull the cursor-position queries out of `pending`.
+///
+/// Returns the bytes that belong on the screen and whether a query was seen.
+/// The tail of a split query is left in `pending` for the next read.
+fn extract_dsr(pending: &mut Vec<u8>) -> (Vec<u8>, bool) {
+    let mut display = Vec::new();
+    let mut query = false;
+    loop {
+        let found = pending
+            .windows(DSR_QUERY.len())
+            .position(|w| w == DSR_QUERY);
+        let Some(at) = found else { break };
+        display.extend_from_slice(&pending[..at]);
+        pending.drain(..at + DSR_QUERY.len());
+        query = true;
+    }
+    let hold = partial_dsr_len(pending);
+    let keep = pending.len() - hold;
+    display.extend_from_slice(&pending[..keep]);
+    pending.drain(..keep);
+    (display, query)
 }
 
 fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
@@ -157,22 +208,36 @@ impl LocalPty {
 
         let mut reader = pair.master.try_clone_reader().map_err(io_err)?;
         let writer = pair.master.take_writer().map_err(io_err)?;
+        let writer = Arc::new(Mutex::new(writer));
 
         let screen = Arc::new(ScreenBuffer::new());
         let reader_eof = Arc::new(AtomicBool::new(false));
         {
             let screen = Arc::clone(&screen);
             let reader_eof = Arc::clone(&reader_eof);
+            let writer = Arc::clone(&writer);
             std::thread::Builder::new()
                 .name("local-pty-reader".to_string())
                 .spawn(move || {
                     let mut buf = [0u8; 4096];
+                    let mut pending: Vec<u8> = Vec::new();
                     loop {
                         match reader.read(&mut buf) {
                             Ok(0) | Err(_) => break,
                             Ok(n) => {
-                                let text = String::from_utf8_lossy(&buf[..n]);
-                                screen.push_chunk(&text);
+                                pending.extend_from_slice(&buf[..n]);
+                                let (display, saw_query) = extract_dsr(&mut pending);
+                                if saw_query {
+                                    // Answer the cursor-position query so
+                                    // the child stops waiting for it.
+                                    let mut w = writer.lock().unwrap();
+                                    let _ = w.write_all(DSR_REPLY);
+                                    let _ = w.flush();
+                                }
+                                if !display.is_empty() {
+                                    let text = String::from_utf8_lossy(&display);
+                                    screen.push_chunk(&text);
+                                }
                             }
                         }
                     }
@@ -184,7 +249,7 @@ impl LocalPty {
         }
 
         Ok(Arc::new(LocalPty {
-            writer: Mutex::new(writer),
+            writer,
             master: Mutex::new(Some(pair.master)),
             child: Mutex::new(child),
             screen,

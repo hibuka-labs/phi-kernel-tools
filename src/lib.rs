@@ -35,6 +35,8 @@
 
 pub mod task_registry;
 
+pub mod path_display;
+
 pub mod spill;
 
 pub mod interaction;

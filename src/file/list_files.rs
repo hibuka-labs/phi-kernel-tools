@@ -287,11 +287,7 @@ impl Tool for ListFilesTool {
             } else {
                 format!(" ({})", human_size(entry.size))
             };
-            let relative = entry
-                .path
-                .strip_prefix(&dir_path)
-                .unwrap_or(&entry.path)
-                .display();
+            let relative = crate::path_display::display_relative(&dir_path, &entry.path);
             let (type_marker, kind_str) = if entry.is_dir {
                 ("/", " (directory)")
             } else {
@@ -404,7 +400,7 @@ fn collect_entries(
         };
 
         let relative = entry_path.strip_prefix(dir).unwrap_or(&entry_path);
-        let display_name = relative.display().to_string();
+        let display_name = crate::path_display::display_path(relative);
 
         entries.push(FileEntry {
             name: display_name,
@@ -488,7 +484,7 @@ fn collect_entries_recursive(
 
         let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
         let relative = entry_path.strip_prefix(dir).unwrap_or(&entry_path);
-        let display_name = relative.display().to_string();
+        let display_name = crate::path_display::display_path(relative);
 
         entries.push(FileEntry {
             name: display_name,

@@ -218,9 +218,10 @@ impl NotesStore {
                 self.walk_dir(&path, root, files, max);
             } else if path.is_file()
                 && let Ok(relative) = path.strip_prefix(root)
-                && let Some(s) = relative.to_str()
             {
-                files.push(s.to_string());
+                // `/` separators on every platform: the listing is read by a
+                // model that may have learned the shape on another OS.
+                files.push(crate::path_display::display_path(relative));
             }
         }
     }

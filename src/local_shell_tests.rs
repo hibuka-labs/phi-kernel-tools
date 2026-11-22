@@ -166,6 +166,10 @@ async fn test_call_timeout() {
 /// child — otherwise a grandchild (e.g. a `java` server launched by `mvn`)
 /// leaks as an orphan. Here `sleep` is the grandchild: `sh` backgrounds it
 /// and `wait`s, so on timeout both must die.
+///
+/// Unix-only: the liveness probe is `kill -0 <pid>`, a POSIX signal
+/// convention with no Windows equivalent (Windows has no signal 0).
+#[cfg(unix)]
 #[tokio::test]
 async fn test_call_timeout_kills_descendants() {
     let dir = tempfile::tempdir().unwrap();

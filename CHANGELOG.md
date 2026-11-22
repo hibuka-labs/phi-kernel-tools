@@ -16,6 +16,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `(directory)`), so the assertion failed against a correct implementation.
   The assertion now matches the count itself.
 
+- **Tool output shows one path shape on every platform.** A Windows run
+  rendered `src\main.rs` in `list_files` and `notes\a.md` in the notes
+  listing, while a Unix run rendered `src/main.rs` and `notes/a.md`. A
+  model that learned the separator on one platform read the other wrong.
+  Paths the model sees are now rendered with `/` everywhere; the path used
+  to touch the filesystem is untouched.
+
+- **A PTY task on Windows no longer hangs before it prints.** Windows
+  ConPTY forwards the application's cursor-position query (`ESC[6n`) to the
+  host and waits for the reply on the child's stdin; a raw pipe never
+  answers it, so the child blocked and the screen stayed empty. The PTY
+  reader now answers the query itself, so a Windows PTY task runs.
+
+- **The timeout test that counts on a POSIX signal is Unix-only.** The
+  liveness probe is `kill -0 <pid>`; Windows has no signal 0, so the test
+  is now scoped to Unix instead of failing there.
+
+- **An absolute path is resolved the same way on every platform.** The
+  test hardcoded `/etc/hosts`, which is not an absolute path on Windows
+  (it has no drive prefix), so the resolution took a different branch
+  there. The test now builds an absolute path from the temp directory.
+
 ### Changed
 - **Tests run on every release platform.** CI builds and runs the test
   suite on Linux, macOS and Windows instead of Linux alone. A new

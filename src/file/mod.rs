@@ -177,12 +177,15 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let root = dir.path();
 
-        // Absolute paths are allowed in open mode. Existing paths come back
-        // canonicalized (symlink-safe), so compare against the canonical form
-        // — on macOS `/etc` itself is a symlink into `/private/etc`.
-        let abs = resolve_path(root, "/etc/hosts", false).unwrap();
-        let expected = std::path::PathBuf::from("/etc/hosts");
-        let expected = expected.canonicalize().unwrap_or(expected);
+        // Absolute paths are allowed in open mode. The path is built from the
+        // temp dir so it is absolute on every platform (`/etc/hosts` is not
+        // absolute on Windows — it has no drive prefix). Existing paths come
+        // back canonicalized (symlink-safe), so compare against the canonical
+        // form — on macOS the temp dir itself is a symlink into /private/var.
+        let target = root.join("absolute-target.txt");
+        std::fs::write(&target, "x").unwrap();
+        let abs = resolve_path(root, &target.to_string_lossy(), false).unwrap();
+        let expected = target.canonicalize().unwrap_or(target.clone());
         assert_eq!(abs, expected);
 
         // `..` escapes are allowed in open mode (approval layer is the guard).
