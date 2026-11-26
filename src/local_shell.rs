@@ -207,7 +207,7 @@ impl Tool for LocalShellTool {
         "Executes a bash command and returns its output.\n\n\
          - IMPORTANT: Avoid using this tool to run `cat`, `head`, `tail`, `sed`, `awk`, or `echo` commands, unless explicitly instructed or after you have verified that a dedicated tool cannot accomplish your task. Instead, use the appropriate dedicated tool as this will provide a much better experience for the user.\n\
          - Command output is displayed to you, not reliably to the user.\n\
-         - `timeout_ms` is in milliseconds: default 120000, max 600000 for a foreground command.\n\
+         - `timeout_ms` is in milliseconds: default 120000 in foreground, 0 (never kill) in background; max 600000 for a foreground command.\n\
          - `background: true` runs the command detached: it keeps running across turns and re-invokes you when it exits. No `&` needed. You will be notified when it exits — do not poll its output while waiting. Foreground `sleep` is blocked.\n\
          - `pty: true` (background only) runs under a terminal, so interactive prompts work: task_output returns `[waiting for input]` when one blocks the task, and task_input answers it. Use for programs that need a TTY (ssh, REPLs, installers, pagers).\n\
          - `cd` carries to the next call only if the command succeeds and ends inside the working directory. Prefer absolute paths. Shell state (env vars, functions) does not persist; the shell is initialized from the user's profile.\n\
@@ -222,7 +222,7 @@ impl Tool for LocalShellTool {
             "properties": {
                 "command": {
                     "type": "string",
-                    "description": "The shell command to execute. For commands that may produce large output, consider limiting lines: cat large files with | tail -n 30, find / ls -R with | head -n 50, grep over large scope with | head -n 30."
+                    "description": "The shell command to execute. If it may produce large output, limit its lines (e.g. | head -n 50)."
                 },
                 "working_dir": {
                     "type": "string",
@@ -230,17 +230,17 @@ impl Tool for LocalShellTool {
                 },
                 "background": {
                     "type": "boolean",
-                    "description": "Run in background. Returns immediately with a task_id. Use task_output to check results.",
+                    "description": "Run detached in the background; returns a task_id.",
                     "default": false
                 },
                 "pty": {
                     "type": "boolean",
-                    "description": "Run under a pseudo-terminal (requires background: true). Interactive prompts work — answer them with task_input.",
+                    "description": "Run under a pseudo-terminal (requires background: true).",
                     "default": false
                 },
                 "timeout_ms": {
                     "type": "integer",
-                    "description": "Kill the process after N ms; 0 = never kill. Default: 120000 in foreground, indefinite (0) in background.",
+                    "description": "Kill the process after N ms; 0 = never kill.",
                     "minimum": 0
                 }
             },
