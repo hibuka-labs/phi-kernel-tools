@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-27
+
+### Changed
+- **`agent-works` requirement bumped from 0.16.1 to 0.17.0** — one version of
+  each family crate in the graph. The new `agent-works` carries the memory
+  write-path limits; nothing in this crate's surface changes.
+
+### Fixed
+- **The shell tool no longer teaches two opposite things about `cat`.** The
+  tool description told the model to avoid `cat`/`head`/`tail`, while the
+  command-argument doc taught `cat large files with | tail -n 30` — the model
+  received both. The argument doc now only teaches line limiting, and the
+  parameter semantics the description already carried are no longer repeated
+  in the schema.
+
 ## [0.16.1] - 2026-11-22
 
 ### Fixed
